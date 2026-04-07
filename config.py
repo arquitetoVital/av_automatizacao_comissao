@@ -1,0 +1,90 @@
+"""
+config.py
+─────────
+Único lugar para alterar datas e constantes do projeto.
+Nenhum outro módulo define valores de configuração — apenas importa daqui.
+
+Credenciais sensíveis são lidas de variáveis de ambiente (ou de um arquivo .env).
+Para desenvolvimento local, crie um arquivo .env na raiz do projeto:
+
+    OMIE_APP_KEY=
+    OMIE_APP_SECRET=
+
+Jamais commite o arquivo .env no repositório.
+"""
+
+import os
+from calendar import monthrange
+from datetime import date
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# ═══════════════════════════════════════════════════════
+#  LOGGING
+# ═══════════════════════════════════════════════════════
+LOG_FILE = Path("gerar_comissoes.log")
+
+# ═══════════════════════════════════════════════════════
+#  OMIE — credenciais via variável de ambiente
+# ═══════════════════════════════════════════════════════
+OMIE_APP_KEY    = os.environ["OMIE_APP_KEY"]
+OMIE_APP_SECRET = os.environ["OMIE_APP_SECRET"]
+
+# ═══════════════════════════════════════════════════════
+#  MÊS DE REFERÊNCIA — alterar apenas esta linha
+# ═══════════════════════════════════════════════════════
+_MES = date(2026, 4, 1)   # ← única linha a editar a cada mês
+
+_MESES_PT = {
+    1: "JANEIRO", 2: "FEVEREIRO", 3: "MARÇO",    4: "ABRIL",
+    5: "MAIO",    6: "JUNHO",     7: "JULHO",     8: "AGOSTO",
+    9: "SETEMBRO", 10: "OUTUBRO", 11: "NOVEMBRO", 12: "DEZEMBRO",
+}
+_ultimo_dia = monthrange(_MES.year, _MES.month)[1]
+
+MES_REF         = f"{_MES.month:02d}_{_MESES_PT[_MES.month]}"       # "03_MARÇO"
+MES_INICIO_OMIE = _MES.strftime("01/%m/%Y")                          # "01/03/2026"
+MES_FIM_OMIE    = f"{_ultimo_dia:02d}/{_MES.month:02d}/{_MES.year}"  # "31/03/2026"
+ANO_MES_REF     = _MES.strftime("%Y-%m")                             # "2026-03"
+PASTA_CUSTO     = f"CUSTO {_MESES_PT[_MES.month]}"                   # "CUSTO MARÇO"
+
+# ═══════════════════════════════════════════════════════
+#  PASTAS DE REDE — sobrescrevíveis via variável de ambiente
+#
+#  PASTA_VENDEDOR_SP → simuladores dos vendedores SP + relatórios individuais SP
+#  PASTA_VENDEDOR_MG → simuladores dos vendedores MG + relatórios individuais MG
+# ═══════════════════════════════════════════════════════
+_BASE = Path(os.getenv("PASTA_BASE", r"Z:\TI\ROBERT\PROJETO COMISSOES"))
+
+PASTA_COORD       = Path(os.getenv("PASTA_COORD",       str(_BASE / "TESTE_COORDENADOR")))
+PASTA_VENDEDOR_SP = Path(os.getenv("PASTA_VENDEDOR_SP", str(_BASE / "PASTA_VENDEDOR_SP")))
+PASTA_VENDEDOR_MG = Path(os.getenv("PASTA_VENDEDOR_MG", str(_BASE / "PASTA_VENDEDOR_MG")))
+PASTA_COMPRADOR   = Path(os.getenv("PASTA_COMPRADOR",   str(_BASE / "TESTE_COMPRADOR")))
+
+# Pasta raiz dos coordenadores para os simuladores de compras.
+# Estrutura esperada:
+#   {PASTA_COORD_COMPRAS}\{ANO}\COORDENADORES\SIMULADORES_COMPRAS\{MES_REF}\{SP|MG}\
+#   {PASTA_COORD_COMPRAS}\{ANO}\COORDENADORES\SIMULADORES_COMPRAS\{MES_REF}\{SP|MG}\OK\
+#   {PASTA_COORD_COMPRAS}\{ANO}\COORDENADORES\SIMULADORES_COMPRAS\{MES_REF}\{SP|MG}\ERRO\
+_ANO_REF = str(_MES.year)
+PASTA_COORD_COMPRAS_SP = Path(os.getenv(
+    "PASTA_COORD_COMPRAS_SP",
+    str(_BASE / _ANO_REF / "COORDENADORES" / "SIMULADORES_COMPRAS" / MES_REF / "SP"),
+))
+PASTA_COORD_COMPRAS_MG = Path(os.getenv(
+    "PASTA_COORD_COMPRAS_MG",
+    str(_BASE / _ANO_REF / "COORDENADORES" / "SIMULADORES_COMPRAS" / MES_REF / "MG"),
+))
+
+# ═══════════════════════════════════════════════════════
+#  REGRAS DE COMISSÃO
+# ═══════════════════════════════════════════════════════
+TABELA_COMISSAO: dict[str, float] = {
+    "A": 0.020,
+    "B": 0.013,
+    "C": 0.007,
+    "D": 0.005,
+}

@@ -1,0 +1,22 @@
+# Credenciais — NUNCA commitar
+.env
+blacklist.txt
+vendedores_sp.txt
+vendedores_mg.txt
+
+# Banco local
+*.db
+
+# Log de execução
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Excel temporários
+~$*.xlsx
+~$*.xlsm
