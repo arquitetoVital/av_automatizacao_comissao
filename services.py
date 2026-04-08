@@ -403,33 +403,48 @@ def _descobrir_simuladores(pasta_base: Path, blacklist: set[str]) -> dict[str, P
 
 # ═══ MELHORIA RETROATIVA — BUSCA EM MESES ANTERIORES ══
 
+_MAX_MESES_RETROATIVOS = 3   # quantos meses anteriores vasculhar no máximo
+
+
 def _meses_anteriores_compras(filial: str) -> list[Path]:
     """
-    Lista as pastas de meses anteriores na pasta de compras da filial,
-    em ordem decrescente (mais recente primeiro).
+    Lista até _MAX_MESES_RETROATIVOS pastas de meses ANTERIORES ao mês atual
+    na pasta de compras da filial, em ordem DECRESCENTE (mais recente primeiro).
+
+    Só meses cujo prefixo numérico seja MENOR que o mês atual são incluídos,
+    garantindo busca estritamente retroativa (nunca para frente).
 
     Estrutura esperada:
-      PASTA_COMPRADOR / {MM_MES} / {filial}
-
-    Retorna somente pastas que existem e sejam diferentes do mês atual.
+      PASTA_COMPRADOR / {MM_NOMEMES} / {filial}
     """
     raiz = config.PASTA_COMPRADOR
     if not raiz.exists():
         return []
 
+    # Extrai o número do mês atual a partir do prefixo "MM_" de config.MES_REF
+    try:
+        mes_atual_num = int(config.MES_REF.split("_")[0])
+    except (ValueError, IndexError):
+        mes_atual_num = 99  # fallback: aceita tudo
+
     pastas: list[tuple[str, Path]] = []
     for item in raiz.iterdir():
-        if not item.is_dir():
+        if not item.is_dir() or item.name == config.MES_REF:
             continue
-        if item.name == config.MES_REF:
-            continue   # mês atual — ignorar
+        # Aceita apenas meses anteriores (número menor)
+        try:
+            num = int(item.name.split("_")[0])
+        except (ValueError, IndexError):
+            continue
+        if num >= mes_atual_num:
+            continue   # mesmo mês ou futuro — ignorar
         pasta_filial = item / filial
         if pasta_filial.exists():
-            pastas.append((item.name, pasta_filial))
+            pastas.append((num, item.name, pasta_filial))
 
-    # Ordena decrescente pelo nome da pasta (ex: "03_MARÇO" > "02_FEVEREIRO")
+    # Ordena decrescente pelo número do mês e limita a _MAX_MESES_RETROATIVOS
     pastas.sort(key=lambda t: t[0], reverse=True)
-    return [p for _, p in pastas]
+    return [p for _, _, p in pastas[:_MAX_MESES_RETROATIVOS]]
 
 
 def _buscar_simulador_retroativo(nome_arq: str, filial: str) -> Path | None:

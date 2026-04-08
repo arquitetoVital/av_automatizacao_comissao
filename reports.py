@@ -3,6 +3,8 @@ reports.py
 ──────────
 Geração dos arquivos Excel de comissão.
 Recebe DataFrames prontos — sem acoplamento com services.
+
+Melhoria #5: linhas com _em_erro=True são renderizadas em vermelho.
 """
 
 import logging
@@ -21,35 +23,24 @@ from utils import nome_para_pasta
 
 log = logging.getLogger(__name__)
 
-# ═══════════════════════════════════════════════════════
-#  LISTAS DE FILIAIS
-# ═══════════════════════════════════════════════════════
+# ═══ LISTAS DE FILIAIS ═════════════════════════════════
 
 def _carregar_lista(nome_arquivo: str) -> set[str]:
-    """
-    Lê um arquivo de lista de vendedores (mesmo formato da blacklist).
-    Retorna conjunto de nomes no formato de pasta (underscores, maiúsculo).
-    """
     caminho = Path(__file__).parent / nome_arquivo
     if not caminho.exists():
-        log.warning("  %s não encontrado — nenhum vendedor classificado por ele.", nome_arquivo)
+        log.warning("  %s nao encontrado.", nome_arquivo)
         return set()
-
     nomes: set[str] = set()
     for linha in caminho.read_text(encoding="utf-8").splitlines():
         linha = linha.strip()
         if linha and not linha.startswith("#"):
             nomes.add(linha.upper())
-
     log.info("  %s carregado: %d entradas.", nome_arquivo, len(nomes))
     return nomes
 
 
-# ═══════════════════════════════════════════════════════
-#  LAYOUT DO EXCEL
-# ═══════════════════════════════════════════════════════
+# ═══ LAYOUT DO EXCEL ═══════════════════════════════════
 
-# Coordenador — visão completa com comparativo
 COLUNAS_COORD = [
     "Data_Venda", "Numero_Pedido", "Nome_Cliente", "Nome_Vendedor",
     "Valor_Pedido", "Data_Nota_Fiscal", "Nota_Fiscal",
@@ -60,7 +51,6 @@ COLUNAS_COORD = [
 ]
 LARGURAS_COORD = [14, 16, 32, 28, 14, 18, 14, 15, 15, 20, 18, 16, 22, 40]
 
-# Vendedor — visão simplificada sem comparativo
 COLUNAS_VENDOR = [
     "Data_Venda", "Numero_Pedido", "Nome_Cliente", "Nome_Vendedor",
     "Valor_Pedido", "Data_Nota_Fiscal", "Nota_Fiscal",
@@ -73,23 +63,32 @@ LARGURAS_VENDOR = [14, 16, 32, 28, 14, 18, 14, 15, 15, 18, 22, 40]
 COLUNAS_MOEDA = {"Valor_Pedido", "Valor_Faturado", "Valor_Pendente", "Valor_Comissao_Calculado"}
 COLUNAS_PCT   = {"Comissao_Vendedor_%", "Comissao_Compras_%", "Menor_Comissao_%", "Comissao_Definida_%"}
 
-COR_HEADER  = "1F4E79"
-COR_LINHA_A = "E2EFDA"   # linhas pares
-COR_LINHA_B = "F2F2F2"   # linhas ímpares
-COR_LINHA_ERRO = "FFCCCC"  # vermelho claro — pedidos com planilha rejeitada (melhoria 4e)
+COR_HEADER       = "1F4E79"
+COR_LINHA_A      = "E2EFDA"   # linhas pares — verde claro
+COR_LINHA_B      = "F2F2F2"   # linhas ímpares — cinza claro
+COR_ERRO         = "FFCCCC"   # vermelho claro — planilha rejeitada (Ajuste a planilha de custo)
+COR_SEM_SIMULAD  = "FFF2CC"   # amarelo claro  — sem simulador    (Adicione o simulador na pasta CUSTO)
+COR_SEM_FATURA   = "EDEDED"   # cinza neutro   — não faturado     (Pedido ainda não faturado)
 
-_OBS_ERRO = "Ajuste a planilha de custo"   # valor exato definido em services.py
+# Mapeamento obs → cor (verificado antes do alternado verde/cinza)
+_OBS_CORES: dict[str, str] = {
+    "Ajuste a planilha de custo":          COR_ERRO,
+    "Adicione o simulador na pasta CUSTO": COR_SEM_SIMULAD,
+    "Pedido ainda não faturado":           COR_SEM_FATURA,
+}
 
 FMT_MOEDA = "R$ #,##0.00"
 FMT_PCT   = "0.00%"
 
 
-# ═══════════════════════════════════════════════════════
-#  ESCRITA DO EXCEL
-# ═══════════════════════════════════════════════════════
+# ═══ ESCRITA DO EXCEL ══════════════════════════════════
 
 def _escrever_excel(df: pd.DataFrame, caminho: Path, colunas: list, larguras: list) -> None:
-    """Gera .xlsx em temp local e copia para o destino. Salva com timestamp se bloqueado."""
+    """
+    Gera .xlsx em temp local e copia para o destino.
+    Melhoria #5: linhas com _em_erro=True recebem fundo vermelho claro.
+    Salva com timestamp se arquivo estiver bloqueado.
+    """
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Vendas"
@@ -113,24 +112,43 @@ def _escrever_excel(df: pd.DataFrame, caminho: Path, colunas: list, larguras: li
     ws.row_dimensions[1].height = 28
     font_d = Font(name="Arial", size=9)
 
+    # Garante que _em_erro está presente mas não inclui como coluna visível
+    em_erro_col = "_em_erro"
+    tem_em_erro = em_erro_col in df.columns
+
     df_out = df[colunas].copy()
-    for r_idx, row in enumerate(df_out.itertuples(index=False), start=2):
-        # Melhoria 4e: linha vermelha se planilha está na pasta ERRO
+
+    for r_idx, (_, row_series) in enumerate(df_out.iterrows(), start=2):
+        # Verifica flag de erro a partir do df original (não do df_out filtrado)
+        if tem_em_erro:
+            linha_original_idx = r_idx - 2  # offset pelo header
+            try:
+                eh_erro = bool(df.iloc[linha_original_idx][em_erro_col])
+            except (IndexError, KeyError):
+                eh_erro = False
+        else:
+            eh_erro = False
+
+        # Determina cor: obs especial tem prioridade sobre alternado verde/cinza
         obs_val = ""
         if "Obs_Comissao" in colunas:
             obs_idx = colunas.index("Obs_Comissao")
-            obs_val = str(row[obs_idx]) if row[obs_idx] else ""
+            obs_val = str(row_series.iloc[obs_idx]) if row_series.iloc[obs_idx] else ""
 
-        if obs_val.strip() == _OBS_ERRO:
-            cor = COR_LINHA_ERRO
+        if obs_val in _OBS_CORES:
+            cor_fundo = _OBS_CORES[obs_val]
+            eh_erro   = (cor_fundo == COR_ERRO)   # vermelho = negrito+cor vermelha
+        elif eh_erro:
+            cor_fundo = COR_ERRO
         else:
-            cor = COR_LINHA_A if r_idx % 2 == 0 else COR_LINHA_B
+            cor_fundo = COR_LINHA_A if r_idx % 2 == 0 else COR_LINHA_B
 
-        fill_d = PatternFill("solid", start_color=cor)
+        fill_d = PatternFill("solid", start_color=cor_fundo)
+        font_linha = Font(name="Arial", size=9, bold=eh_erro, color="990000" if eh_erro else "000000")
 
-        for c_idx, value in enumerate(row, start=1):
+        for c_idx, value in enumerate(row_series, start=1):
             cell           = ws.cell(row=r_idx, column=c_idx, value=value)
-            cell.font      = font_d
+            cell.font      = font_linha
             cell.fill      = fill_d
             cell.border    = borda
             cell.alignment = Alignment(vertical="center")
@@ -164,16 +182,12 @@ def _escrever_excel(df: pd.DataFrame, caminho: Path, colunas: list, larguras: li
                 pass
 
 
-# ═══════════════════════════════════════════════════════
-#  HELPERS
-# ═══════════════════════════════════════════════════════
+# ═══ HELPERS ═══════════════════════════════════════════
 
 def _nome_abreviado(nome_vendedor: str) -> str:
     """
     Retorna primeiro e último nome para uso no nome do arquivo.
-    'ISAQUE RODRIGUES DOS SANTOS' → 'ISAQUE_SANTOS'
-    'ISAQUE SANTOS'               → 'ISAQUE_SANTOS'
-    'ISAQUE'                      → 'ISAQUE'
+    'ISAQUE RODRIGUES DOS SANTOS' -> 'ISAQUE_SANTOS'
     """
     partes = nome_vendedor.strip().split()
     if len(partes) <= 1:
@@ -184,10 +198,6 @@ def _nome_abreviado(nome_vendedor: str) -> str:
 
 
 def _pasta_filial(nome_vendedor: str, lista_sp: set[str], lista_mg: set[str]) -> Path | None:
-    """
-    Retorna a pasta de destino do relatório do vendedor conforme sua filial.
-    Retorna None se o vendedor não estiver em nenhuma das listas.
-    """
     chave = nome_para_pasta(nome_vendedor).upper()
     if chave in lista_sp:
         return config.PASTA_VENDEDOR_SP
@@ -196,13 +206,11 @@ def _pasta_filial(nome_vendedor: str, lista_sp: set[str], lista_mg: set[str]) ->
     return None
 
 
-# ═══════════════════════════════════════════════════════
-#  INTERFACE PÚBLICA
-# ═══════════════════════════════════════════════════════
+# ═══ INTERFACE PÚBLICA ══════════════════════════════════
 
 def gerar_relatorio_coordenador(df: pd.DataFrame) -> None:
-    """Gera o relatório consolidado para o coordenador."""
-    log.info("══ Salvando planilha do coordenador ══")
+    """Gera o relatório consolidado para o coordenador (com linhas vermelhas para erros)."""
+    log.info("═══ Salvando planilha do coordenador ═══")
     caminho = config.PASTA_COORD / f"{config.MES_REF}_RELATORIO_GERAL_COMISSAO.xlsx"
     _escrever_excel(df, caminho, COLUNAS_COORD, LARGURAS_COORD)
 
@@ -210,9 +218,9 @@ def gerar_relatorio_coordenador(df: pd.DataFrame) -> None:
 def distribuir_para_vendedores(df: pd.DataFrame) -> None:
     """
     Gera uma planilha individual por vendedor na pasta de rede da filial correta.
-    Vendedores não classificados em nenhuma lista são ignorados com aviso no log.
+    Melhoria #5: linhas em erro aparecem em vermelho também no relatório do vendedor.
     """
-    log.info("══ Distribuindo planilhas individuais ══")
+    log.info("═══ Distribuindo planilhas individuais ═══")
 
     df = df.copy()
     df["Comissao_Definida_%"] = df["Menor_Comissao_%"]
@@ -241,15 +249,15 @@ def distribuir_para_vendedores(df: pd.DataFrame) -> None:
             / config.MES_REF
             / f"{config.MES_REF}_COMISSAO_{nome_arq}.xlsx"
         )
-        log.info("  '%s' → %d pedidos  [%s]", vendedor, len(df_v), pasta_base.parts[-1])
+        log.info("  '%s' -> %d pedidos  [%s]", vendedor, len(df_v), pasta_base.parts[-1])
         _escrever_excel(df_v, destino, COLUNAS_VENDOR, LARGURAS_VENDOR)
 
     if nao_classificados:
         log.warning(
-            "  [AVISO] %d vendedor(es) sem filial definida — sem relatório gerado:",
+            "  [AVISO] %d vendedor(es) sem filial definida — sem relatorio gerado:",
             len(nao_classificados),
         )
         for nome in nao_classificados:
             log.warning("    – %s", nome)
 
-    log.info("  Distribuição concluída.")
+    log.info("  Distribuicao concluida.")
