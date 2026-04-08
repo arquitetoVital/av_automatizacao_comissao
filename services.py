@@ -401,6 +401,127 @@ def _descobrir_simuladores(pasta_base: Path, blacklist: set[str]) -> dict[str, P
     return simuladores
 
 
+# ═══ MELHORIA RETROATIVA — BUSCA EM MESES ANTERIORES ══
+
+def _meses_anteriores_compras(filial: str) -> list[Path]:
+    """
+    Lista as pastas de meses anteriores na pasta de compras da filial,
+    em ordem decrescente (mais recente primeiro).
+
+    Estrutura esperada:
+      PASTA_COMPRADOR / {MM_MES} / {filial}
+
+    Retorna somente pastas que existem e sejam diferentes do mês atual.
+    """
+    raiz = config.PASTA_COMPRADOR
+    if not raiz.exists():
+        return []
+
+    pastas: list[tuple[str, Path]] = []
+    for item in raiz.iterdir():
+        if not item.is_dir():
+            continue
+        if item.name == config.MES_REF:
+            continue   # mês atual — ignorar
+        pasta_filial = item / filial
+        if pasta_filial.exists():
+            pastas.append((item.name, pasta_filial))
+
+    # Ordena decrescente pelo nome da pasta (ex: "03_MARÇO" > "02_FEVEREIRO")
+    pastas.sort(key=lambda t: t[0], reverse=True)
+    return [p for _, p in pastas]
+
+
+def _buscar_simulador_retroativo(nome_arq: str, filial: str) -> Path | None:
+    """
+    Procura `nome_arq` retroativamente nas pastas de compras de meses anteriores
+    (raiz, OK e ERRO de cada mês), do mais recente para o mais antigo.
+
+    Retorna o Path do primeiro encontrado, ou None.
+    """
+    for pasta_mes_filial in _meses_anteriores_compras(filial):
+        for subpasta in (pasta_mes_filial, pasta_mes_filial / "OK", pasta_mes_filial / "ERRO"):
+            candidato = subpasta / nome_arq
+            if candidato.exists():
+                log.debug(
+                    "    [RETROATIVO] Encontrado '%s' em '%s'", nome_arq, subpasta
+                )
+                return candidato
+    return None
+
+
+def _buscar_simuladores_retroativos(
+    ids_nao_encontrados: set[str],
+    filial: str,
+    pasta_vendedor: Path,
+    blacklist: set[str],
+) -> dict[str, Path]:
+    """
+    Para cada ID de pedido não encontrado na pasta do vendedor,
+    varre os meses anteriores da pasta de compras (filial) em busca do simulador.
+
+    Se encontrado:
+      - copia para a pasta de compras do mês atual (raiz da filial), se ainda não existir;
+      - retorna {nome_arquivo: caminho_copiado}.
+
+    Lógica (melhoria 1b):
+      Busca de forma retroativa mês a mês até encontrar ou esgotar as opções.
+    """
+    if not ids_nao_encontrados:
+        return {}
+
+    pasta_destino_filial, _, _ = _pasta_coordenador_filial(filial)
+    recuperados: dict[str, Path] = {}
+
+    # Monta um índice reverso: id_pedido → lista de nomes de arquivo possíveis
+    # Para cada mês anterior, varre todas as subpastas procurando por ID
+    for pasta_mes_filial in _meses_anteriores_compras(filial):
+        if not ids_nao_encontrados:
+            break   # todos já foram encontrados
+
+        for subpasta in (pasta_mes_filial, pasta_mes_filial / "OK", pasta_mes_filial / "ERRO"):
+            if not subpasta.exists():
+                continue
+            for arq in sorted(subpasta.iterdir()):
+                if not arq.is_file():
+                    continue
+                if arq.suffix.lower() not in _EXT_SIMULADOR or arq.name.startswith("~$"):
+                    continue
+                id_p = _extrair_id_pedido(arq.stem)
+                if not id_p or id_p not in ids_nao_encontrados:
+                    continue
+
+                # Encontrou — copiar para pasta de compras do mês atual
+                destino = pasta_destino_filial / arq.name
+                if not destino.exists():
+                    try:
+                        shutil.copy2(arq, destino)
+                        log.info(
+                            "    [RETROATIVO] Pedido %s — '%s' copiado de '%s' para '%s'",
+                            id_p, arq.name, subpasta, pasta_destino_filial,
+                        )
+                    except Exception as exc:
+                        log.warning(
+                            "    [RETROATIVO] Erro ao copiar '%s': %s", arq.name, exc
+                        )
+                        continue
+                else:
+                    log.debug(
+                        "    [RETROATIVO] Pedido %s — '%s' já existe no destino, ignorado.",
+                        id_p, arq.name,
+                    )
+
+                recuperados[arq.name] = destino
+                ids_nao_encontrados.discard(id_p)
+
+    if recuperados:
+        log.info(
+            "  [RETROATIVO] %d simulador(es) recuperado(s) de meses anteriores [%s].",
+            len(recuperados), filial,
+        )
+    return recuperados
+
+
 def _arquivo_ajustado(nome_arq: str) -> bool:
     stem = Path(nome_arq).stem.upper()
     return stem.endswith(" OK") or stem.endswith("_OK")
@@ -669,6 +790,47 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
     # Melhoria #3: copia por regra de pasta
     _copiar_para_coordenador(sims_sp, "SP")
     _copiar_para_coordenador(sims_mg, "MG")
+
+    # ── Busca retroativa (melhoria nova) ─────────────────────────────────────
+    # Identifica IDs presentes em pedidos mas ausentes nos simuladores dos vendedores
+    ids_com_simulador = {
+        id_p
+        for nome in sims_vendor
+        for id_p in [_extrair_id_pedido(Path(_nome_base(nome)).stem)]
+        if id_p
+    }
+    ids_todos_pedidos = set(idx.keys())
+    ids_faltando_sp   = ids_todos_pedidos - ids_com_simulador
+    ids_faltando_mg   = ids_todos_pedidos - ids_com_simulador
+
+    # Busca retroativa: SP
+    sims_retro_sp = _buscar_simuladores_retroativos(
+        ids_nao_encontrados=ids_faltando_sp,
+        filial="SP",
+        pasta_vendedor=config.PASTA_VENDEDOR_SP,
+        blacklist=blacklist,
+    )
+    # Busca retroativa: MG (sobre os que ainda faltam após SP)
+    sims_retro_mg = _buscar_simuladores_retroativos(
+        ids_nao_encontrados=ids_faltando_mg - {
+            id_p
+            for nome in sims_retro_sp
+            for id_p in [_extrair_id_pedido(Path(_nome_base(nome)).stem)]
+            if id_p
+        },
+        filial="MG",
+        pasta_vendedor=config.PASTA_VENDEDOR_MG,
+        blacklist=blacklist,
+    )
+
+    # Incorpora retroativos ao conjunto de simuladores do vendedor para leitura
+    sims_vendor = {**sims_vendor, **sims_retro_sp, **sims_retro_mg}
+    if sims_retro_sp or sims_retro_mg:
+        log.info(
+            "  Apos retroativo: %d simuladores totais (%d recuperados SP + %d MG).",
+            len(sims_vendor), len(sims_retro_sp), len(sims_retro_mg),
+        )
+    # ─────────────────────────────────────────────────────────────────────────
 
     # Melhoria #4/#5: mapeamento de situacao
     situacao_coord: dict[str, LocalizacaoSimulador] = {
