@@ -465,6 +465,38 @@ def _buscar_simulador_retroativo(nome_arq: str, filial: str) -> Path | None:
     return None
 
 
+def _ids_ja_tratados_comprador(filial: str) -> set[str]:
+    """
+    Retorna o conjunto de IDs de pedido que já foram tratados pelo comprador
+    no mês atual — ou seja, estão em /OK ou /ERRO da pasta do coordenador.
+
+    Esses IDs devem ser IGNORADOS pela busca retroativa:
+      - /OK   → já validado, não precisa de nada
+      - /ERRO → rejeitado, vendedor deve corrigir e repostar na pasta CUSTO
+                  do mês atual; o fluxo normal cuida disso
+    """
+    pasta_filial, pasta_ok, pasta_erro = _pasta_coordenador_filial(filial)
+    ids_tratados: set[str] = set()
+
+    for subpasta in (pasta_ok, pasta_erro):
+        if not subpasta.exists():
+            continue
+        for arq in subpasta.iterdir():
+            if not arq.is_file():
+                continue
+            if arq.suffix.lower() not in _EXT_SIMULADOR or arq.name.startswith("~$"):
+                continue
+            id_p = _extrair_id_pedido(arq.stem)
+            if id_p:
+                ids_tratados.add(id_p)
+                log.debug(
+                    "    [RETROATIVO-SKIP] Pedido %s já em '%s' — ignorado na busca retroativa.",
+                    id_p, subpasta.name,
+                )
+
+    return ids_tratados
+
+
 def _buscar_simuladores_retroativos(
     ids_nao_encontrados: set[str],
     filial: str,
@@ -472,26 +504,41 @@ def _buscar_simuladores_retroativos(
     blacklist: set[str],
 ) -> dict[str, Path]:
     """
-    Para cada ID de pedido não encontrado na pasta do vendedor,
-    varre os meses anteriores da pasta de compras (filial) em busca do simulador.
+    Para cada ID de pedido não encontrado na pasta CUSTO do vendedor (mês atual),
+    varre os meses ANTERIORES da pasta de compras da filial em busca do simulador.
 
-    Se encontrado:
-      - copia para a pasta de compras do mês atual (raiz da filial), se ainda não existir;
-      - retorna {nome_arquivo: caminho_copiado}.
+    Regras de segurança antes de buscar retroativamente:
+      - IDs já presentes em /OK  → ignorar (já validado pelo comprador)
+      - IDs já presentes em /ERRO → ignorar (vendedor deve corrigir e repostar
+        na pasta CUSTO; quando fizer isso, o fluxo normal de cópia para o
+        comprador cuida do restante — sem interferência do retroativo)
 
-    Lógica (melhoria 1b):
-      Busca de forma retroativa mês a mês até encontrar ou esgotar as opções.
+    Se encontrado nos meses anteriores:
+      - Copia para a raiz da pasta do coordenador do mês atual;
+      - Retorna {nome_arquivo: caminho_copiado}.
     """
     if not ids_nao_encontrados:
         return {}
 
+    # Exclui IDs que o comprador já tratou (OK ou ERRO) — não tocar neles
+    ids_ja_tratados = _ids_ja_tratados_comprador(filial)
+    ids_para_buscar = ids_nao_encontrados - ids_ja_tratados
+
+    if not ids_para_buscar:
+        log.debug("  [RETROATIVO] Todos os IDs faltantes já foram tratados pelo comprador [%s].", filial)
+        return {}
+
+    if ids_ja_tratados & ids_nao_encontrados:
+        log.info(
+            "  [RETROATIVO] %d pedido(s) ignorado(s) — já em OK/ERRO do coordenador [%s].",
+            len(ids_ja_tratados & ids_nao_encontrados), filial,
+        )
+
     pasta_destino_filial, _, _ = _pasta_coordenador_filial(filial)
     recuperados: dict[str, Path] = {}
 
-    # Monta um índice reverso: id_pedido → lista de nomes de arquivo possíveis
-    # Para cada mês anterior, varre todas as subpastas procurando por ID
     for pasta_mes_filial in _meses_anteriores_compras(filial):
-        if not ids_nao_encontrados:
+        if not ids_para_buscar:
             break   # todos já foram encontrados
 
         for subpasta in (pasta_mes_filial, pasta_mes_filial / "OK", pasta_mes_filial / "ERRO"):
@@ -503,17 +550,17 @@ def _buscar_simuladores_retroativos(
                 if arq.suffix.lower() not in _EXT_SIMULADOR or arq.name.startswith("~$"):
                     continue
                 id_p = _extrair_id_pedido(arq.stem)
-                if not id_p or id_p not in ids_nao_encontrados:
+                if not id_p or id_p not in ids_para_buscar:
                     continue
 
-                # Encontrou — copiar para pasta de compras do mês atual
+                # Encontrou — copiar para raiz da pasta do coordenador do mês atual
                 destino = pasta_destino_filial / arq.name
                 if not destino.exists():
                     try:
                         shutil.copy2(arq, destino)
                         log.info(
-                            "    [RETROATIVO] Pedido %s — '%s' copiado de '%s' para '%s'",
-                            id_p, arq.name, subpasta, pasta_destino_filial,
+                            "    [RETROATIVO] Pedido %s — '%s' copiado de '%s' para comprador/%s",
+                            id_p, arq.name, subpasta.parent.name, filial,
                         )
                     except Exception as exc:
                         log.warning(
@@ -522,12 +569,12 @@ def _buscar_simuladores_retroativos(
                         continue
                 else:
                     log.debug(
-                        "    [RETROATIVO] Pedido %s — '%s' já existe no destino, ignorado.",
+                        "    [RETROATIVO] Pedido %s — '%s' já existe na raiz do coordenador, ignorado.",
                         id_p, arq.name,
                     )
 
                 recuperados[arq.name] = destino
-                ids_nao_encontrados.discard(id_p)
+                ids_para_buscar.discard(id_p)
 
     if recuperados:
         log.info(
@@ -872,6 +919,10 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
     total_ok = total_pendente = total_skip = total_erro = 0
     ids_erro: set[str] = set()  # pedidos com simulador exclusivamente em ERRO
 
+    # IDs já processados — evita dupla contagem entre o loop principal e o retroativo
+    ids_processados: set[str] = set()
+
+    # ── Loop principal: simuladores presentes na pasta CUSTO do vendedor ──────
     for nome_arq, arq_vendor in sims_vendor.items():
         try:
             id_pedido = _extrair_id_pedido(Path(nome_arq).stem)
@@ -912,14 +963,12 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
             else:
                 pct_c     = 0.0
                 pct_menor = 0.0
-                # Melhoria #4c e #4d
                 if sit == "no_erro":
                     obs = "Ajuste a planilha de custo"
                     ids_erro.add(id_pedido)
                 else:
                     obs = "Analise de Compras pendente!"
 
-            # Melhoria #5: linha vermelha so quando esta EXCLUSIVAMENTE em ERRO
             em_erro = (sit == "no_erro")
 
             for linha in linhas_pedido:
@@ -930,6 +979,7 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
                 linha.obs_comissao          = obs
                 linha.em_erro               = em_erro
 
+            ids_processados.add(id_pedido)
             n = len(linhas_pedido)
             if comprador_ajustou:
                 log.info("    [OK] Pedido %s (%d linha(s)) -> %s", id_pedido, n, obs)
@@ -941,6 +991,80 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
         except Exception as exc:
             log.exception("    [ERRO] '%s': %s", nome_arq, exc)
             total_erro += 1
+
+    # ── Loop retroativo: IDs bloqueados pela _ids_ja_tratados_comprador ───────
+    # Pedidos cujo simulador foi copiado retroativamente em execução anterior e
+    # o comprador já moveu para /OK ou /ERRO — não estão em sims_vendor mas
+    # precisam ser processados para preencher comissão e obs corretamente.
+    for filial in ("SP", "MG"):
+        _, pasta_ok, pasta_erro = _pasta_coordenador_filial(filial)
+
+        # /OK: simulador validado pelo comprador — lê comissão diretamente do arquivo OK
+        for arq_ok in sorted(pasta_ok.iterdir()) if pasta_ok.exists() else []:
+            if not arq_ok.is_file():
+                continue
+            if arq_ok.suffix.lower() not in _EXT_SIMULADOR or arq_ok.name.startswith("~$"):
+                continue
+            id_pedido = _extrair_id_pedido(arq_ok.stem)
+            if not id_pedido or id_pedido in ids_processados:
+                continue
+            linhas_pedido = idx.get(id_pedido)
+            if not linhas_pedido:
+                continue
+            try:
+                info_ok = _ler_letra_simulador(arq_ok)
+                if info_ok is None:
+                    continue
+                letra_c   = str(info_ok.letra_com or "").strip().upper()
+                pct_c     = 0.0 if _is_prejuizo(info_ok.status) else config.TABELA_COMISSAO.get(letra_c, 0.0)
+                # Sem simulador do vendedor disponivel: usa pct_c como pct_v tambem
+                pct_menor = pct_c
+                prejuizo  = pct_menor == 0.0 and _is_prejuizo(info_ok.status)
+                obs       = "Comissao Definida! - Prejuizo" if prejuizo else "Comissao Definida!"
+                for linha in linhas_pedido:
+                    linha.comissao_vendedor_pct = pct_c   # melhor aproximacao disponivel
+                    linha.comissao_compras_pct  = pct_c
+                    linha.comissao_menor_pct    = pct_menor
+                    linha.valor_comissao_menor  = round(linha.valor_faturado * pct_menor, 2)
+                    linha.obs_comissao          = obs
+                    linha.em_erro               = False
+                ids_processados.add(id_pedido)
+                log.info(
+                    "    [OK-RETROATIVO] Pedido %s (%d linha(s)) -> %s",
+                    id_pedido, len(linhas_pedido), obs,
+                )
+                total_ok += 1
+            except Exception as exc:
+                log.exception("    [ERRO-RETROATIVO-OK] Pedido %s: %s", id_pedido, exc)
+                total_erro += 1
+
+        # /ERRO: simulador rejeitado — obs vermelha, sem comissao
+        for arq_erro in sorted(pasta_erro.iterdir()) if pasta_erro.exists() else []:
+            if not arq_erro.is_file():
+                continue
+            if arq_erro.suffix.lower() not in _EXT_SIMULADOR or arq_erro.name.startswith("~$"):
+                continue
+            id_pedido = _extrair_id_pedido(arq_erro.stem)
+            if not id_pedido or id_pedido in ids_processados:
+                continue
+            linhas_pedido = idx.get(id_pedido)
+            if not linhas_pedido:
+                continue
+            obs = "Ajuste a planilha de custo"
+            ids_erro.add(id_pedido)
+            for linha in linhas_pedido:
+                linha.comissao_vendedor_pct = 0.0
+                linha.comissao_compras_pct  = 0.0
+                linha.comissao_menor_pct    = 0.0
+                linha.valor_comissao_menor  = 0.0
+                linha.obs_comissao          = obs
+                linha.em_erro               = True
+            ids_processados.add(id_pedido)
+            log.info(
+                "    [ERRO-RETROATIVO] Pedido %s (%d linha(s)) -> linha vermelha",
+                id_pedido, len(linhas_pedido),
+            )
+            total_pendente += 1
 
     log.info(
         "  Resumo: %d OK | %d pendentes | %d ignorados | %d erros",
