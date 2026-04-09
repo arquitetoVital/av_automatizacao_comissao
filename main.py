@@ -4,11 +4,12 @@ main.py
 Ponto de entrada. Orquestra os passos em ordem, sem lógica de negócio.
 
 Fluxo:
-  1. Extração  → OMIE: pedidos com NF + pedidos sem NF incluídos no mês (services)
-  2. Comissões → simuladores custo (services)
-  3. Relatório → coordenador       (reports)
-  4. Marcação  → sem simulador     (services)
-  5. Distribuição → vendedores     (reports)
+  1. Extração      → OMIE: pedidos com NF + pedidos sem NF incluídos no mês (services)
+  2. Comissões     → simuladores custo (services)
+  3. Relatório     → coordenador       (reports)
+  4. Marcação      → sem simulador     (services)
+  5. Distribuição  → vendedores        (reports)
+  6. Publicação    → JSON → GitHub     (exporter + github_publisher)
 """
 
 import logging
@@ -17,6 +18,8 @@ from datetime import datetime
 
 import config
 import database
+import exporter
+import github_publisher
 import reports
 import services
 
@@ -74,7 +77,14 @@ def main() -> None:
     df = services.pedidos_para_df(pedidos)
 
     # ── Passo 5: Distribuição por vendedor ───────────────
+    log.info("══ PASSO 5: distribuição vendedores ══")
     reports.distribuir_para_vendedores(df)
+
+    # ── Passo 6: Publicação JSON → GitHub ────────────────
+    log.info("══ PASSO 6: publicação dashboard ══")
+    payload = exporter.gerar_json(df)
+    exporter.salvar_json_local(payload)   # salva cópia local como fallback
+    github_publisher.publicar(payload)    # commit no repositório privado
 
     duracao = (datetime.now() - inicio).total_seconds()
     log.info("════════════════════════════════════════════════")

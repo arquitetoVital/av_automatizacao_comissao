@@ -1,5 +1,6 @@
 # Credenciais — NUNCA commitar
 .env
+*.json
 blacklist.txt
 vendedores_sp.txt
 vendedores_mg.txt
