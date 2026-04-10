@@ -748,6 +748,42 @@ def _copiar_para_coordenador(simuladores_vendor: dict[str, Path], filial: str) -
     )
 
 
+
+
+def _copiar_para_analista(simuladores_vendor: dict[str, Path], filial: str) -> None:
+    """
+    Copia simuladores do vendedor para a pasta da analista de vendas.
+
+    Regras simples (sem lógica de OK/ERRO):
+      - Destino: PASTA_ANALISTA_SIMULADORES / MES_REF / {filial} /
+      - Se o arquivo já existir no destino, não sobrescreve.
+      - Só executa se config.RELATORIO_ANALISTA_ATIVO == True.
+    """
+    if not config.RELATORIO_ANALISTA_ATIVO:
+        return
+
+    destino = config.PASTA_ANALISTA_SIMULADORES / config.MES_REF / filial
+    destino.mkdir(parents=True, exist_ok=True)
+
+    copiados = ignorados = 0
+    for nome, origem in simuladores_vendor.items():
+        arq_destino = destino / nome
+        if arq_destino.exists():
+            log.debug("    [ANALISTA] Ignorado (já existe): %s", nome)
+            ignorados += 1
+        else:
+            try:
+                shutil.copy2(origem, arq_destino)
+                log.debug("    [ANALISTA] Copiado: %s", nome)
+                copiados += 1
+            except Exception as exc:
+                log.error("    [ANALISTA] Erro ao copiar '%s': %s", nome, exc)
+
+    log.info(
+        "  Simuladores [%s] -> analista: %d copiados | %d já existiam.",
+        filial, copiados, ignorados,
+    )
+
 # ═══ DESCOBERTA — PASTA DO COORDENADOR ════════════════
 
 def _descobrir_simuladores_comprador_filial(filial: str) -> dict[str, Path]:
@@ -852,6 +888,10 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
     # Melhoria #3: copia por regra de pasta
     _copiar_para_coordenador(sims_sp, "SP")
     _copiar_para_coordenador(sims_mg, "MG")
+
+    # Copia para pasta da analista (simples, sem lógica de OK/ERRO)
+    _copiar_para_analista(sims_sp, "SP")
+    _copiar_para_analista(sims_mg, "MG")
 
     # ── Busca retroativa (melhoria nova) ─────────────────────────────────────
     # Identifica IDs presentes em pedidos mas ausentes nos simuladores dos vendedores

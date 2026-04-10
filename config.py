@@ -80,16 +80,21 @@ PASTA_COORD_COMPRAS_MG = Path(os.getenv(
 ))
 
 # ═══════════════════════════════════════════════════════
-#  ANALISTA DE VENDAS — cópia adicional do relatório do coordenador
+#  ANALISTA DE VENDAS
 #
-#  RELATORIO_ANALISTA_ATIVO = True  → gera cópia em PASTA_ANALISTA
-#  RELATORIO_ANALISTA_ATIVO = False → passo ignorado (padrão)
+#  RELATORIO_ANALISTA_ATIVO = True  → ativa TODAS as funções da analista:
+#    - Cópia do relatório do coordenador em PASTA_ANALISTA
+#    - Cópia dos simuladores em PASTA_ANALISTA_SIMULADORES / MES_REF / {SP|MG} /
+#  RELATORIO_ANALISTA_ATIVO = False → passos ignorados (padrão)
 #
 #  Para ativar via variável de ambiente:
 #    RELATORIO_ANALISTA_ATIVO=true
+#    PASTA_ANALISTA=Z:\CAMINHO\RELATORIO_ANALISTA
+#    PASTA_ANALISTA_SIMULADORES=Z:\CAMINHO\SIMULADORES_ANALISTA
 # ═══════════════════════════════════════════════════════
-PASTA_ANALISTA = Path(os.getenv("PASTA_ANALISTA", str(_BASE / "ANALISTA_VENDAS")))
-RELATORIO_ANALISTA_ATIVO = os.getenv("RELATORIO_ANALISTA_ATIVO", "false").lower() == "true"
+RELATORIO_ANALISTA_ATIVO     = os.getenv("RELATORIO_ANALISTA_ATIVO", "false").lower() == "true"
+PASTA_ANALISTA               = Path(os.getenv("PASTA_ANALISTA",             str(_BASE / "ANALISTA_VENDAS")))
+PASTA_ANALISTA_SIMULADORES   = Path(os.getenv("PASTA_ANALISTA_SIMULADORES", str(_BASE / "ANALISTA_VENDAS" / "SIMULADORES")))
 
 # ═══════════════════════════════════════════════════════
 #  REGRAS DE COMISSÃO
