@@ -1074,27 +1074,40 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
     return pedidos, ids_erro
 
 
+# Comissão aplicada automaticamente a pedidos faturados sem simulador (fabricação interna)
+_PCT_FABRICACAO_INTERNA = 0.02   # 2%
+
+
 def marcar_sem_simulador(pedidos: list[Pedido]) -> None:
     """
-    Melhoria #4a: sem NF          -> 'Pedido ainda nao faturado'
-    Melhoria #4b: com NF, sem obs -> 'Adicione o simulador na pasta CUSTO'
+    Classifica pedidos que ainda não têm obs definida:
+
+    - Sem NF                → "Pedido ainda nao faturado"           (sem comissão)
+    - Com NF, sem simulador → "Fabricacao interna"                  (comissão real = 2%)
+      O valor de comissão já é calculado aqui para aparecer no relatório.
     """
-    sem_nf = sem_simulador = 0
+    sem_nf = fab_interna = 0
     for p in pedidos:
-        tem_nf  = p.nota_fiscal not in ("-", "", None)
-        sem_obs = not p.obs_comissao.strip()
-        if not tem_nf and sem_obs:
+        if p.obs_comissao.strip():
+            continue   # já classificado por calcular_comissoes
+
+        tem_nf = p.nota_fiscal not in ("-", "", None)
+
+        if not tem_nf:
             p.obs_comissao = "Pedido ainda nao faturado"
             sem_nf += 1
-        elif tem_nf and sem_obs:
-            p.obs_comissao = "Adicione o simulador na pasta CUSTO"
-            sem_simulador += 1
+        else:
+            # Fabricação interna: aplica 2% sobre valor faturado
+            p.comissao_menor_pct    = _PCT_FABRICACAO_INTERNA
+            p.valor_comissao_menor  = round(p.valor_faturado * _PCT_FABRICACAO_INTERNA, 2)
+            p.obs_comissao          = "Fabricacao interna"
+            fab_interna += 1
 
     if sem_nf:
         log.info("  %d pedido(s) ainda nao faturado(s).", sem_nf)
-    if sem_simulador:
-        log.info("  %d pedido(s) faturado(s) sem simulador.", sem_simulador)
-    if not sem_nf and not sem_simulador:
+    if fab_interna:
+        log.info("  %d pedido(s) com fabricacao interna (comissao 2%% aplicada).", fab_interna)
+    if not sem_nf and not fab_interna:
         log.info("  Todos os pedidos com obs definida.")
 
 

@@ -41,6 +41,15 @@ def _carregar_lista(nome_arquivo: str) -> set[str]:
 
 # ═══ LAYOUT DO EXCEL ═══════════════════════════════════
 
+# Nomes de coluna internos (DataFrame) → rótulo exibido no Excel
+# "Comissao_Vendedor_%" exibe como "Comissao Simulador"
+# "Menor_Comissao_%"   exibe como "Comissao Real"
+_RENOMEAR_HEADER: dict[str, str] = {
+    "Comissao_Vendedor_%": "Comissao Simulador",
+    "Menor_Comissao_%":    "Comissao Real",
+    "Comissao_Definida_%": "Comissao Real",
+}
+
 COLUNAS_COORD = [
     "Data_Venda", "Numero_Pedido", "Nome_Cliente", "Nome_Vendedor",
     "Valor_Pedido", "Data_Nota_Fiscal", "Nota_Fiscal",
@@ -49,7 +58,7 @@ COLUNAS_COORD = [
     "Valor_Comissao_Calculado",
     "Obs_Comissao",
 ]
-LARGURAS_COORD = [14, 16, 32, 28, 14, 18, 14, 15, 15, 20, 18, 16, 22, 40]
+LARGURAS_COORD = [14, 16, 32, 28, 14, 18, 14, 15, 15, 22, 18, 16, 22, 40]
 
 COLUNAS_VENDOR = [
     "Data_Venda", "Numero_Pedido", "Nome_Cliente", "Nome_Vendedor",
@@ -71,10 +80,13 @@ COR_SEM_SIMULAD  = "FFF2CC"   # amarelo claro  — sem simulador    (Adicione o 
 COR_SEM_FATURA   = "EDEDED"   # cinza neutro   — não faturado     (Pedido ainda não faturado)
 
 # Mapeamento obs → cor (verificado antes do alternado verde/cinza)
+COR_FAB_INTERNA = "DDEEFF"   # azul claro — fabricação interna (comissão 2% automática)
+
 _OBS_CORES: dict[str, str] = {
     "Ajuste a planilha de custo":          COR_ERRO,
     "Adicione o simulador na pasta CUSTO": COR_SEM_SIMULAD,
-    "Pedido ainda não faturado":           COR_SEM_FATURA,
+    "Pedido ainda nao faturado":           COR_SEM_FATURA,
+    "Fabricacao interna":                  COR_FAB_INTERNA,
 }
 
 FMT_MOEDA = "R$ #,##0.00"
@@ -102,7 +114,8 @@ def _escrever_excel(df: pd.DataFrame, caminho: Path, colunas: list, larguras: li
     )
 
     for col_idx, (col_name, larg) in enumerate(zip(colunas, larguras), start=1):
-        cell = ws.cell(row=1, column=col_idx, value=col_name.replace("_", " "))
+        header_label = _RENOMEAR_HEADER.get(col_name, col_name.replace("_", " "))
+        cell = ws.cell(row=1, column=col_idx, value=header_label)
         cell.font      = font_h
         cell.fill      = fill_h
         cell.alignment = align_c
@@ -215,15 +228,44 @@ def gerar_relatorio_coordenador(df: pd.DataFrame) -> None:
     _escrever_excel(df, caminho, COLUNAS_COORD, LARGURAS_COORD)
 
 
+def gerar_relatorio_analista(df: pd.DataFrame) -> None:
+    """
+    Gera cópia do relatório do coordenador na pasta da analista de vendas.
+    Só executa se config.RELATORIO_ANALISTA_ATIVO == True.
+    Mesmas colunas e formatação do relatório do coordenador.
+    """
+    if not config.RELATORIO_ANALISTA_ATIVO:
+        log.info("  Relatório da analista desativado (RELATORIO_ANALISTA_ATIVO=false).")
+        return
+    log.info("═══ Salvando planilha da analista de vendas ═══")
+    caminho = config.PASTA_ANALISTA / f"{config.MES_REF}_RELATORIO_GERAL_COMISSAO.xlsx"
+    _escrever_excel(df, caminho, COLUNAS_COORD, LARGURAS_COORD)
+
+
 def distribuir_para_vendedores(df: pd.DataFrame) -> None:
     """
     Gera uma planilha individual por vendedor na pasta de rede da filial correta.
     Melhoria #5: linhas em erro aparecem em vermelho também no relatório do vendedor.
+
+    Pedidos com obs "Fabricacao interna" são ocultados do vendedor:
+      - Obs substituída por "Adicione o simulador na pasta CUSTO"
+      - Comissão zerada (vendedor não deve ver o cálculo interno)
     """
     log.info("═══ Distribuindo planilhas individuais ═══")
 
     df = df.copy()
     df["Comissao_Definida_%"] = df["Menor_Comissao_%"]
+
+    # Oculta fabricação interna do vendedor — zera comissão e troca obs
+    mask_fab = df["Obs_Comissao"] == "Fabricacao interna"
+    if mask_fab.any():
+        df.loc[mask_fab, "Comissao_Definida_%"]        = 0.0
+        df.loc[mask_fab, "Valor_Comissao_Calculado"]   = 0.0
+        df.loc[mask_fab, "Obs_Comissao"]               = "Adicione o simulador na pasta CUSTO"
+        log.info(
+            "  %d linha(s) de fabricacao interna ocultadas nos relatorios dos vendedores.",
+            int(mask_fab.sum()),
+        )
 
     lista_sp = _carregar_lista("vendedores_sp.txt")
     lista_mg = _carregar_lista("vendedores_mg.txt")

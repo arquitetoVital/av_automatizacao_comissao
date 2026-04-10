@@ -54,7 +54,7 @@ def main() -> None:
     log.info("  Total: %d pedidos", len(pedidos))
 
     # ── Passo 2: Comissões ───────────────────────────────
-    log.info("══ PASSO 2: comissões ══")
+    log.info("══ PASSO 2: comissoes ══")
     try:
         pedidos, ids_erro = services.calcular_comissoes(pedidos)
     except Exception as exc:
@@ -64,25 +64,28 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # Converte para DataFrame uma única vez — compartilhado pelos passos 3 e 5
-    df = services.pedidos_para_df(pedidos)
-
-    # ── Passo 3: Relatório coordenador ───────────────────
-    reports.gerar_relatorio_coordenador(df)
-
-    # ── Passo 4: Marcar sem simulador ────────────────────
+    # ── Passo 3: Marcar sem simulador ────────────────────
+    # Roda ANTES de gerar qualquer relatório para que o cálculo de 2%
+    # (fabricação interna) já esteja presente no DataFrame do coordenador.
+    log.info("══ PASSO 3: marcação sem simulador ══")
     services.marcar_sem_simulador(pedidos)
 
-    # Reconverte após marcação para incluir obs atualizadas no relatório de vendedores
-    df = services.pedidos_para_df(pedidos)
+    # df_coord → inclui fabricação interna (2%) — usado pelo coordenador e analista
+    # df_vendor → fabricação interna ocultada — usado nos relatórios dos vendedores
+    df_coord = services.pedidos_para_df(pedidos)
+
+    # ── Passo 4: Relatório coordenador + analista ─────────
+    log.info("══ PASSO 4: relatório coordenador ══")
+    reports.gerar_relatorio_coordenador(df_coord)
+    reports.gerar_relatorio_analista(df_coord)
 
     # ── Passo 5: Distribuição por vendedor ───────────────
     log.info("══ PASSO 5: distribuição vendedores ══")
-    reports.distribuir_para_vendedores(df)
+    reports.distribuir_para_vendedores(df_coord)
 
     # ── Passo 6: Publicação JSON → GitHub ────────────────
     log.info("══ PASSO 6: publicação dashboard ══")
-    payload = exporter.gerar_json(df)
+    payload = exporter.gerar_json(df_coord)
     exporter.salvar_json_local(payload)   # salva cópia local como fallback
     github_publisher.publicar(payload)    # commit no repositório privado
 

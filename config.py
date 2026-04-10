@@ -7,8 +7,8 @@ Nenhum outro módulo define valores de configuração — apenas importa daqui.
 Credenciais sensíveis são lidas de variáveis de ambiente (ou de um arquivo .env).
 Para desenvolvimento local, crie um arquivo .env na raiz do projeto:
 
-    OMIE_APP_KEY=
-    OMIE_APP_SECRET=
+    OMIE_APP_KEY=4011885988110
+    OMIE_APP_SECRET=415133ab4e1db4cf532665301496e0f3
 
 Jamais commite o arquivo .env no repositório.
 """
@@ -78,6 +78,18 @@ PASTA_COORD_COMPRAS_MG = Path(os.getenv(
     "PASTA_COORD_COMPRAS_MG",
     str(_BASE / _ANO_REF / "COORDENADORES" / "SIMULADORES_COMPRAS" / MES_REF / "MG"),
 ))
+
+# ═══════════════════════════════════════════════════════
+#  ANALISTA DE VENDAS — cópia adicional do relatório do coordenador
+#
+#  RELATORIO_ANALISTA_ATIVO = True  → gera cópia em PASTA_ANALISTA
+#  RELATORIO_ANALISTA_ATIVO = False → passo ignorado (padrão)
+#
+#  Para ativar via variável de ambiente:
+#    RELATORIO_ANALISTA_ATIVO=true
+# ═══════════════════════════════════════════════════════
+PASTA_ANALISTA = Path(os.getenv("PASTA_ANALISTA", str(_BASE / "ANALISTA_VENDAS")))
+RELATORIO_ANALISTA_ATIVO = os.getenv("RELATORIO_ANALISTA_ATIVO", "false").lower() == "true"
 
 # ═══════════════════════════════════════════════════════
 #  REGRAS DE COMISSÃO
