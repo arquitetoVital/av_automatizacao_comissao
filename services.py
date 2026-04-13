@@ -70,6 +70,40 @@ def _na_blacklist(nome_vendedor: str, blacklist: set[str]) -> bool:
     return nome_para_pasta(nome_vendedor).upper() in blacklist
 
 
+# ═══ BLACKLIST DE CLIENTES ════════════════════════════
+
+def _normalizar_str(s: str) -> str:
+    """Remove acentos e converte para maiúsculo para comparação normalizada."""
+    import unicodedata
+    s = unicodedata.normalize("NFD", s)
+    return "".join(c for c in s if unicodedata.category(c) != "Mn").upper().strip()
+
+
+def _carregar_blacklist_clientes() -> list[str]:
+    """
+    Lê blacklist_clientes.txt e retorna lista de termos normalizados.
+    Comparação por SUBSTRING — um termo contido no nome bloqueia o cliente.
+    Ex: "ACOS VITAL" bloqueia "ACOS VITAL CHILE LTDA", "ACOS VITAL S.A.", etc.
+    """
+    caminho = Path(__file__).parent / "blacklist_clientes.txt"
+    if not caminho.exists():
+        log.warning("  blacklist_clientes.txt nao encontrado — nenhum cliente ignorado.")
+        return []
+    termos: list[str] = []
+    for linha in caminho.read_text(encoding="utf-8").splitlines():
+        linha = linha.strip()
+        if linha and not linha.startswith("#"):
+            termos.append(_normalizar_str(linha))
+    log.info("  Blacklist clientes: %d termo(s) carregado(s).", len(termos))
+    return termos
+
+
+def _cliente_bloqueado(nome_cliente: str, blacklist_clientes: list[str]) -> bool:
+    """Retorna True se algum termo da blacklist for substring do nome do cliente."""
+    nome_norm = _normalizar_str(nome_cliente)
+    return any(termo in nome_norm for termo in blacklist_clientes)
+
+
 # ═══ EXTRAÇÃO OMIE ═════════════════════════════════════
 
 def _agrupar_nfs_por_pedido(nfs: list[dict]) -> dict[int, dict]:
@@ -118,7 +152,8 @@ def _data_no_mes(data_str: str) -> bool:
 def extrair_omie() -> list[Pedido]:
     log.info("── Extraindo dados OMIE ──")
     client    = OmieClient()
-    blacklist = _carregar_blacklist()
+    blacklist          = _carregar_blacklist()
+    blacklist_clientes = _carregar_blacklist_clientes()
 
     pedidos_raw = client.listar_pedidos()
     idx_pedidos: dict[int, dict] = {}
@@ -168,6 +203,14 @@ def extrair_omie() -> list[Pedido]:
             return None
         if _na_blacklist(nome_vendedor, blacklist):
             log.debug("    [BLACKLIST] Pedido %s (%s).", numero_pedido, nome_vendedor)
+            blacklistados += 1
+            return None
+
+        if _cliente_bloqueado(nome_cliente, blacklist_clientes):
+            log.debug(
+                "    [BLACKLIST-CLIENTE] Pedido %s ignorado (cliente: %s).",
+                numero_pedido, nome_cliente,
+            )
             blacklistados += 1
             return None
 
@@ -225,7 +268,7 @@ def extrair_omie() -> list[Pedido]:
 
     pedidos.sort(key=lambda p: p.numero_pedido.zfill(10))
     log.info(
-        "  OMIE: %d com NF | %d sem NF | %d blacklistados | %d NFs sem pedido.",
+        "  OMIE: %d com NF | %d sem NF | %d blacklistados (vendedor+cliente) | %d NFs sem pedido.",
         len(ids_inseridos), sem_nf_incluidos, blacklistados, nfs_sem_pedido,
     )
     database.upsert_pedidos(pedidos, config.ANO_MES_REF)
