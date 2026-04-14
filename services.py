@@ -768,10 +768,15 @@ def _deve_copiar(origem: Path, loc: LocalizacaoSimulador) -> tuple[bool, str]:
 
 
 def _copiar_para_coordenador(simuladores_vendor: dict[str, Path], filial: str) -> None:
-    """Copia simuladores do vendedor para a raiz da filial do coordenador (Melhorias #1 e #3)."""
+    """Copia simuladores do vendedor para a raiz da filial do coordenador (Melhorias #1 e #3).
+    Correção: arquivos sem ID de pedido identificável no nome são ignorados."""
     pasta_filial, pasta_ok, pasta_erro = _pasta_coordenador_filial(filial)
-    copiados = ignorados = 0
+    copiados = ignorados = sem_id = 0
     for nome, origem in simuladores_vendor.items():
+        if not _extrair_id_pedido(Path(_nome_base(nome)).stem):
+            log.debug("    [SEM-ID] Ignorado (sem numero de pedido no nome): %s", nome)
+            sem_id += 1
+            continue
         loc   = _localizar_simulador_coordenador(nome, pasta_filial, pasta_ok, pasta_erro)
         deve, motivo = _deve_copiar(origem, loc)
         if not deve:
@@ -786,8 +791,8 @@ def _copiar_para_coordenador(simuladores_vendor: dict[str, Path], filial: str) -
             except Exception as exc:
                 log.error("    Erro ao copiar '%s': %s", nome, exc)
     log.info(
-        "  Simuladores [%s] -> coordenador: %d copiados | %d ignorados.",
-        filial, copiados, ignorados,
+        "  Simuladores [%s] -> coordenador: %d copiados | %d ignorados | %d sem ID.",
+        filial, copiados, ignorados, sem_id,
     )
 
 
@@ -808,8 +813,12 @@ def _copiar_para_analista(simuladores_vendor: dict[str, Path], filial: str) -> N
     destino = config.PASTA_ANALISTA_SIMULADORES / config.MES_REF / filial
     destino.mkdir(parents=True, exist_ok=True)
 
-    copiados = ignorados = 0
+    copiados = ignorados = sem_id = 0
     for nome, origem in simuladores_vendor.items():
+        if not _extrair_id_pedido(Path(_nome_base(nome)).stem):
+            log.debug("    [ANALISTA-SEM-ID] Ignorado (sem numero de pedido no nome): %s", nome)
+            sem_id += 1
+            continue
         arq_destino = destino / nome
         if arq_destino.exists():
             log.debug("    [ANALISTA] Ignorado (já existe): %s", nome)
@@ -823,8 +832,8 @@ def _copiar_para_analista(simuladores_vendor: dict[str, Path], filial: str) -> N
                 log.error("    [ANALISTA] Erro ao copiar '%s': %s", nome, exc)
 
     log.info(
-        "  Simuladores [%s] -> analista: %d copiados | %d já existiam.",
-        filial, copiados, ignorados,
+        "  Simuladores [%s] -> analista: %d copiados | %d já existiam | %d sem ID.",
+        filial, copiados, ignorados, sem_id,
     )
 
 # ═══ DESCOBERTA — PASTA DO COORDENADOR ════════════════
