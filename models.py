@@ -34,6 +34,14 @@ class Pedido:
 
     obs_comissao: str = ""
 
+    # Flag de cor vermelha nos relatórios (simulador rejeitado pelo comprador)
+    em_erro: bool = False
+
+    # Flag interna: True quando a comissão foi definida pela planilha comissoes_fixas.xlsx.
+    # Esses pedidos já têm comissao_compras_pct preenchida e devem seguir a lógica
+    # "menor entre vendedor e compras" quando o vendedor adicionar simulador.
+    comissao_fixa: bool = False
+
     def to_dict(self) -> dict:
         """Converte para dicionário com os nomes de coluna usados no Excel/API."""
         return {

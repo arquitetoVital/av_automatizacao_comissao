@@ -22,6 +22,8 @@ import xml.etree.ElementTree as ET
 import zipfile
 import pandas as pd
 
+import openpyxl
+
 import config
 import database
 from clients import OmieClient
@@ -30,7 +32,7 @@ from utils import nome_para_pasta
 
 log = logging.getLogger(__name__)
 
-_THREADS_SIMULADORES = 8
+_THREADS_SIMULADORES = 4
 _EXT_SIMULADOR = {'.xlsx', '.xlsm'}
 
 
@@ -102,6 +104,88 @@ def _cliente_bloqueado(nome_cliente: str, blacklist_clientes: list[str]) -> bool
     """Retorna True se algum termo da blacklist for substring do nome do cliente."""
     nome_norm = _normalizar_str(nome_cliente)
     return any(termo in nome_norm for termo in blacklist_clientes)
+
+
+# ═══ COMISSÕES FIXAS POR CLIENTE ═══════════════════════
+
+def carregar_comissoes_fixas() -> dict[str, float]:
+    """
+    Lê comissoes_fixas.xlsx (colunas CLIENTE | COMISSAO PADRÃO) e retorna
+    um dicionário {nome_cliente_normalizado: percentual_float}.
+
+    Exemplos de valor aceito na coluna COMISSAO PADRÃO:
+      "2%"  → 0.02     "1,3%" → 0.013    "0.7%" → 0.007    "0.02" → 0.02
+
+    O arquivo deve estar na mesma pasta do script.
+    Se não existir ou estiver vazio, retorna {} sem interromper a execução.
+    """
+    caminho = Path(__file__).parent / "comissoes_fixas.xlsx"
+    if not caminho.exists():
+        log.warning("  comissoes_fixas.xlsx nao encontrado — nenhuma comissao fixa aplicada.")
+        return {}
+
+    fixas: dict[str, float] = {}
+    try:
+        wb = openpyxl.load_workbook(caminho, read_only=True, data_only=True)
+        ws = wb.active
+        cabecalho_pulado = False
+        for row in ws.iter_rows(values_only=True):
+            if not cabecalho_pulado:
+                cabecalho_pulado = True
+                continue
+            if not row or row[0] is None:
+                continue
+            nome_raw  = str(row[0]).strip()
+            valor_raw = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ""
+            if not nome_raw or not valor_raw:
+                continue
+            # Normaliza percentual: "2%" → 0.02 | "1,3%" → 0.013 | "0.02" → 0.02
+            valor_str = valor_raw.replace("%", "").replace(",", ".").strip()
+            try:
+                pct = float(valor_str)
+                if pct > 1:       # veio como 2.0 em vez de 0.02
+                    pct = pct / 100
+                fixas[_normalizar_str(nome_raw)] = pct
+            except ValueError:
+                log.warning("  [COMISSAO-FIXA] Valor inválido para '%s': '%s'", nome_raw, valor_raw)
+        wb.close()
+    except Exception as exc:
+        log.error("  [COMISSAO-FIXA] Erro ao ler '%s': %s", caminho, exc)
+        return {}
+
+    log.info("  Comissoes fixas carregadas: %d cliente(s).", len(fixas))
+    return fixas
+
+
+def _aplicar_comissoes_fixas(
+    pedidos: list,
+    fixas: dict[str, float],
+) -> None:
+    """
+    Para cada pedido cujo cliente consta em `fixas`:
+      - Define comissao_compras_pct com o percentual da planilha.
+      - Define comissao_fixa = True (sinaliza que compras já está definida).
+      - Se o pedido já tiver NF mas ainda não tiver simulador do vendedor,
+        aplica o percentual também em comissao_menor_pct / valor_comissao_menor
+        como estimativa (obs = "Fabricacao interna / simulador ausente").
+        Quando o vendedor adicionar o simulador, calcular_comissoes() vai
+        comparar e escolher o menor normalmente.
+    """
+    if not fixas:
+        return
+    aplicados = 0
+    for p in pedidos:
+        chave = _normalizar_str(p.nome_cliente)
+        pct = fixas.get(chave)
+        if pct is None:
+            continue
+        p.comissao_compras_pct = pct
+        p.comissao_fixa        = True
+        aplicados += 1
+
+    if aplicados:
+        log.info("  Comissoes fixas aplicadas em %d pedido(s).", aplicados)
+
 
 
 # ═══ EXTRAÇÃO OMIE ═════════════════════════════════════
@@ -924,6 +1008,12 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
     log.info("═══ Calculando comissoes ═══")
     blacklist = _carregar_blacklist()
 
+    # Carrega e aplica comissões fixas antes do loop de simuladores.
+    # Pedidos com comissao_fixa=True já têm comissao_compras_pct definida;
+    # o loop abaixo vai usar esse valor ao comparar com o simulador do vendedor.
+    fixas = carregar_comissoes_fixas()
+    _aplicar_comissoes_fixas(pedidos, fixas)
+
     idx: dict[str, list[Pedido]] = {}
     for p in pedidos:
         chave = p.numero_pedido.strip().zfill(6)
@@ -1044,6 +1134,10 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
             loc_coord = situacao_coord.get(id_pedido)
             sit = loc_coord.situacao if loc_coord else "nao_existe"
 
+            # Verifica se alguma linha deste pedido tem comissão fixa
+            tem_fixa      = any(getattr(l, "comissao_fixa", False) for l in linhas_pedido)
+            pct_fixa      = linhas_pedido[0].comissao_compras_pct if tem_fixa else 0.0
+
             if comprador_ajustou:
                 letra_c   = str(info_comprador.letra_com or "").strip().upper()
                 pct_c     = 0.0 if _is_prejuizo(info_comprador.status) else config.TABELA_COMISSAO.get(letra_c, 0.0)
@@ -1051,6 +1145,13 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
                 prejuizo  = pct_menor == 0.0 and (
                     _is_prejuizo(info_vendor.status) or _is_prejuizo(info_comprador.status)
                 )
+                obs = "Comissao Definida! - Prejuizo" if prejuizo else "Comissao Definida!"
+            elif tem_fixa:
+                # Comissão do comprador definida pela planilha de fixas —
+                # compara com o simulador do vendedor e usa a menor.
+                pct_c     = pct_fixa
+                pct_menor = min(pct_v, pct_c)
+                prejuizo  = pct_menor == 0.0 and _is_prejuizo(info_vendor.status)
                 obs = "Comissao Definida! - Prejuizo" if prejuizo else "Comissao Definida!"
             else:
                 pct_c     = 0.0
@@ -1172,13 +1273,17 @@ _PCT_FABRICACAO_INTERNA = 0.02   # 2%
 
 def marcar_sem_simulador(pedidos: list[Pedido]) -> None:
     """
-    Classifica pedidos que ainda não têm obs definida:
+    Classifica pedidos que ainda não têm obs definida após calcular_comissoes:
 
-    - Sem NF                → "Pedido ainda nao faturado"           (sem comissão)
-    - Com NF, sem simulador → "Fabricacao interna"                  (comissão real = 2%)
-      O valor de comissão já é calculado aqui para aparecer no relatório.
+    - Sem NF → "Pedido ainda nao faturado" (sem comissão)
+    - Com NF, sem simulador:
+        * Cliente com comissão fixa → usa o pct da planilha comissoes_fixas como
+          estimativa (comissao_compras_pct já preenchida por _aplicar_comissoes_fixas).
+          Quando o vendedor adicionar o simulador, calcular_comissoes comparará e
+          escolherá o menor.
+        * Demais clientes → 2% automático ("Fabricacao interna / simulador ausente")
     """
-    sem_nf = fab_interna = 0
+    sem_nf = fab_interna = fab_fixa = 0
     for p in pedidos:
         if p.obs_comissao.strip():
             continue   # já classificado por calcular_comissoes
@@ -1188,18 +1293,27 @@ def marcar_sem_simulador(pedidos: list[Pedido]) -> None:
         if not tem_nf:
             p.obs_comissao = "Pedido ainda nao faturado"
             sem_nf += 1
+        elif p.comissao_fixa:
+            # Estimativa com comissão fixa — compras já definida, aguarda simulador
+            pct = p.comissao_compras_pct
+            p.comissao_menor_pct   = pct
+            p.valor_comissao_menor = round(p.valor_faturado * pct, 2)
+            p.obs_comissao         = "Fabricacao interna / simulador ausente"
+            fab_fixa += 1
         else:
-            # Fabricação interna: aplica 2% sobre valor faturado
-            p.comissao_menor_pct    = _PCT_FABRICACAO_INTERNA
-            p.valor_comissao_menor  = round(p.valor_faturado * _PCT_FABRICACAO_INTERNA, 2)
-            p.obs_comissao          = "Fabricacao interna"
+            # Sem comissão fixa: aplica 2% como estimativa padrão
+            p.comissao_menor_pct   = _PCT_FABRICACAO_INTERNA
+            p.valor_comissao_menor = round(p.valor_faturado * _PCT_FABRICACAO_INTERNA, 2)
+            p.obs_comissao         = "Fabricacao interna / simulador ausente"
             fab_interna += 1
 
     if sem_nf:
         log.info("  %d pedido(s) ainda nao faturado(s).", sem_nf)
+    if fab_fixa:
+        log.info("  %d pedido(s) com comissao fixa (aguardando simulador do vendedor).", fab_fixa)
     if fab_interna:
-        log.info("  %d pedido(s) com fabricacao interna (comissao 2%% aplicada).", fab_interna)
-    if not sem_nf and not fab_interna:
+        log.info("  %d pedido(s) sem simulador (comissao 2%% aplicada).", fab_interna)
+    if not sem_nf and not fab_fixa and not fab_interna:
         log.info("  Todos os pedidos com obs definida.")
 
 

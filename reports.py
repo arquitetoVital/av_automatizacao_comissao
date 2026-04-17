@@ -46,6 +46,7 @@ def _carregar_lista(nome_arquivo: str) -> set[str]:
 # "Menor_Comissao_%"   exibe como "Comissao Real"
 _RENOMEAR_HEADER: dict[str, str] = {
     "Comissao_Vendedor_%": "Comissao Simulador",
+    "Comissao_Compras_%":  "Comissao Compras",
     "Menor_Comissao_%":    "Comissao Real",
     "Comissao_Definida_%": "Comissao Real",
 }
@@ -73,20 +74,23 @@ COLUNAS_MOEDA = {"Valor_Pedido", "Valor_Faturado", "Valor_Pendente", "Valor_Comi
 COLUNAS_PCT   = {"Comissao_Vendedor_%", "Comissao_Compras_%", "Menor_Comissao_%", "Comissao_Definida_%"}
 
 COR_HEADER       = "1F4E79"
-COR_LINHA_A      = "E2EFDA"   # linhas pares — verde claro
-COR_LINHA_B      = "F2F2F2"   # linhas ímpares — cinza claro
-COR_ERRO         = "FFCCCC"   # vermelho claro — planilha rejeitada (Ajuste a planilha de custo)
-COR_SEM_SIMULAD  = "FFF2CC"   # amarelo claro  — sem simulador    (Adicione o simulador na pasta CUSTO)
-COR_SEM_FATURA   = "EDEDED"   # cinza neutro   — não faturado     (Pedido ainda não faturado)
+COR_LINHA_A      = "E2EFDA"   # linhas pares — verde claro  (Comissao Definida!)
+COR_LINHA_B      = "F2F2F2"   # linhas ímpares — verde claro (Comissao Definida!)
+COR_ERRO         = "FFCCCC"   # vermelho       — planilha rejeitada
+COR_SEM_SIMULAD  = "FFF2CC"   # amarelo        — análise de compras pendente
+COR_SEM_FATURA   = "EDEDED"   # cinza          — pedido não faturado
+COR_FAB_INTERNA  = "DDEEFF"   # azul           — fabricação interna / simulador ausente
+COR_LARANJA      = "FFD966"   # laranja        — adicione o simulador na pasta CUSTO
 
-# Mapeamento obs → cor (verificado antes do alternado verde/cinza)
-COR_FAB_INTERNA = "DDEEFF"   # azul claro — fabricação interna (comissão 2% automática)
-
+# Mapeamento obs → cor de fundo da linha.
+# A cor verde (COR_LINHA_A/B alternado) é aplicada como fallback quando
+# nenhuma obs especial corresponde — ou seja, "Comissao Definida!" e variantes.
 _OBS_CORES: dict[str, str] = {
-    "Ajuste a planilha de custo":          COR_ERRO,
-    "Adicione o simulador na pasta CUSTO": COR_SEM_SIMULAD,
-    "Pedido ainda nao faturado":           COR_SEM_FATURA,
-    "Fabricacao interna":                  COR_FAB_INTERNA,
+    "Ajuste a planilha de custo":                    COR_ERRO,
+    "Analise de Compras pendente!":                  COR_SEM_SIMULAD,
+    "Pedido ainda nao faturado":                     COR_SEM_FATURA,
+    "Fabricacao interna / simulador ausente":        COR_FAB_INTERNA,
+    "Adicione o simulador na pasta CUSTO":           COR_LARANJA,
 }
 
 FMT_MOEDA = "R$ #,##0.00"
@@ -150,9 +154,12 @@ def _escrever_excel(df: pd.DataFrame, caminho: Path, colunas: list, larguras: li
 
         if obs_val in _OBS_CORES:
             cor_fundo = _OBS_CORES[obs_val]
-            eh_erro   = (cor_fundo == COR_ERRO)   # vermelho = negrito+cor vermelha
+            eh_erro   = (cor_fundo == COR_ERRO)   # vermelho = negrito + texto escuro
         elif eh_erro:
             cor_fundo = COR_ERRO
+        elif obs_val.startswith("Comissao Definida"):
+            # Verde alternado para linhas com comissão confirmada
+            cor_fundo = COR_LINHA_A if r_idx % 2 == 0 else COR_LINHA_B
         else:
             cor_fundo = COR_LINHA_A if r_idx % 2 == 0 else COR_LINHA_B
 
@@ -257,7 +264,7 @@ def distribuir_para_vendedores(df: pd.DataFrame) -> None:
     df["Comissao_Definida_%"] = df["Menor_Comissao_%"]
 
     # Oculta fabricação interna do vendedor — zera comissão e troca obs
-    mask_fab = df["Obs_Comissao"] == "Fabricacao interna"
+    mask_fab = df["Obs_Comissao"] == "Fabricacao interna / simulador ausente"
     if mask_fab.any():
         df.loc[mask_fab, "Comissao_Definida_%"]        = 0.0
         df.loc[mask_fab, "Valor_Comissao_Calculado"]   = 0.0
