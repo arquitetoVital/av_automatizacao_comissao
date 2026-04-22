@@ -1145,10 +1145,16 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
                 prejuizo  = pct_menor == 0.0 and (
                     _is_prejuizo(info_vendor.status) or _is_prejuizo(info_comprador.status)
                 )
+                # Comissão fixa é teto absoluto: mesmo com simulador validado pelo
+                # comprador, o pedido nunca paga mais do que o valor fixado para
+                # aquele cliente. O simulador pode estar em OK normalmente, mas o
+                # percentual considerado é limitado ao teto.
+                if tem_fixa and pct_menor > pct_fixa:
+                    pct_menor = pct_fixa
                 obs = "Comissao Definida! - Prejuizo" if prejuizo else "Comissao Definida!"
             elif tem_fixa:
-                # Comissão do comprador definida pela planilha de fixas —
-                # compara com o simulador do vendedor e usa a menor.
+                # Comprador ainda não avaliou, mas comissão já está definida pela
+                # planilha de fixas — compara com o simulador do vendedor e usa a menor.
                 pct_c     = pct_fixa
                 pct_menor = min(pct_v, pct_c)
                 prejuizo  = pct_menor == 0.0 and _is_prejuizo(info_vendor.status)
