@@ -25,6 +25,7 @@ import base64
 import json
 import logging
 import os
+from datetime import date
 
 import requests
 
@@ -35,13 +36,10 @@ log = logging.getLogger(__name__)
 _API_BASE = "https://api.github.com"
 
 
-def _caminho_arquivo() -> str:
-    """
-    Resolve o caminho do arquivo JSON no repositório.
-    Substitui {ANO_MES} pelo valor atual (ex: "2026-04").
-    """
-    template = os.getenv("GITHUB_JSON_PATH", "data/{ANO_MES}.json")
-    return template.replace("{ANO_MES}", config.ANO_MES_REF)
+def _eh_mes_atual() -> bool:
+    """Retorna True se config._MES corresponde ao mês corrente (ano + mês)."""
+    hoje = date.today()
+    return config._MES.year == hoje.year and config._MES.month == hoje.month
 
 
 def _headers() -> dict[str, str]:
@@ -91,44 +89,76 @@ def _obter_sha_atual(repo: str, caminho: str, branch: str, headers: dict) -> str
     resp.raise_for_status()
 
 
+def _commit_arquivo(
+    repo: str,
+    branch: str,
+    caminho: str,
+    conteudo_b64: str,
+    headers: dict,
+    mensagem: str,
+) -> None:
+    """
+    Cria ou substitui um único arquivo no repositório via PUT.
+    Obtém o SHA atual automaticamente se necessário.
+    Lança HTTPError em caso de falha.
+    """
+    sha_atual = _obter_sha_atual(repo, caminho, branch, headers)
+
+    body: dict = {
+        "message": mensagem,
+        "content": conteudo_b64,
+        "branch":  branch,
+    }
+    if sha_atual:
+        body["sha"] = sha_atual
+
+    url  = f"{_API_BASE}/repos/{repo}/contents/{caminho}"
+    resp = requests.put(url, headers=headers, json=body, timeout=30)
+    resp.raise_for_status()
+
+    acao = "atualizado" if sha_atual else "criado"
+    log.info("  ✅ GitHub: '%s' %s.", caminho, acao)
+
+
 def publicar(payload: dict) -> bool:
     """
-    Faz o commit do JSON no repositório GitHub.
+    Faz o commit do JSON no repositório GitHub seguindo a estrutura:
 
-    Fluxo:
-      1. GET  /repos/{repo}/contents/{path}  → obtém SHA se já existir
-      2. PUT  /repos/{repo}/contents/{path}  → cria ou atualiza o arquivo
+      history/{ANO_MES}.json   → sempre atualizado (mês atual ou passado)
+      current_month.json       → atualizado apenas quando for o mês corrente
 
-    Retorna True em caso de sucesso, False em caso de falha (sem levantar exceção,
-    para não interromper a execução principal).
+    Retorna True se todos os commits necessários foram bem-sucedidos,
+    False em caso de qualquer falha (sem interromper a execução principal).
     """
     try:
         repo    = _repo()
         branch  = _branch()
-        caminho = _caminho_arquivo()
         headers = _headers()
 
-        conteudo_json  = json.dumps(payload, ensure_ascii=False, indent=2)
-        conteudo_b64   = base64.b64encode(conteudo_json.encode("utf-8")).decode("ascii")
-        sha_atual      = _obter_sha_atual(repo, caminho, branch, headers)
+        conteudo_json = json.dumps(payload, ensure_ascii=False, indent=2)
+        conteudo_b64  = base64.b64encode(conteudo_json.encode("utf-8")).decode("ascii")
+        msg_base      = f"chore: atualiza dados {config.MES_REF} [{config.ANO_MES_REF}]"
 
-        body: dict = {
-            "message": f"chore: atualiza dados {config.MES_REF} [{config.ANO_MES_REF}]",
-            "content": conteudo_b64,
-            "branch":  branch,
-        }
-        if sha_atual:
-            body["sha"] = sha_atual   # obrigatório para sobrescrever
+        # ── 1. history/{ANO_MES}.json — sempre ────────────────────────────────
+        caminho_history = f"history/{config.ANO_MES_REF}.json"
+        _commit_arquivo(repo, branch, caminho_history, conteudo_b64, headers, msg_base)
 
-        url  = f"{_API_BASE}/repos/{repo}/contents/{caminho}"
-        resp = requests.put(url, headers=headers, json=body, timeout=30)
-        resp.raise_for_status()
+        # ── 2. current_month.json — somente se for o mês atual ────────────────
+        if _eh_mes_atual():
+            _commit_arquivo(
+                repo, branch,
+                "current_month.json",
+                conteudo_b64,
+                headers,
+                msg_base,
+            )
+            log.info("  ✅ GitHub: 'current_month.json' sincronizado.")
+        else:
+            log.info(
+                "  ℹ️  GitHub: mês %s é passado — 'current_month.json' não alterado.",
+                config.ANO_MES_REF,
+            )
 
-        acao = "atualizado" if sha_atual else "criado"
-        log.info(
-            "  ✅ GitHub: arquivo %s com sucesso → %s/%s@%s",
-            acao, repo, caminho, branch,
-        )
         return True
 
     except EnvironmentError as exc:
