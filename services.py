@@ -983,6 +983,25 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
     if refaturamentos:
         log.info("  %d pedido(s) marcado(s) como Refaturamento (comissao 0).", len(refaturamentos))
 
+    # Marca vendedores sem comissão imediatamente: comissão 0, obs definida.
+    # Tem prioridade sobre simuladores, OK de compras e comissões fixas —
+    # esses pedidos aparecem no relatório mas nunca recebem valor de comissão.
+    sem_comissao_marcados = [
+        p for p in pedidos
+        if not p.obs_comissao.strip() and not info_vend.tem_comissao(p.nome_vendedor)
+    ]
+    for p in sem_comissao_marcados:
+        p.comissao_menor_pct   = 0.0
+        p.valor_comissao_menor = 0.0
+        p.comissao_compras_pct = 0.0
+        p.comissao_vendedor_pct = 0.0
+        p.obs_comissao         = "Sem comissao"
+    if sem_comissao_marcados:
+        log.info(
+            "  %d pedido(s) de vendedor(es) sem comissao marcados (comissao 0).",
+            len(sem_comissao_marcados),
+        )
+
     idx: dict[str, list[Pedido]] = {}
     for p in pedidos:
         chave = p.numero_pedido.strip().zfill(6)
@@ -1270,16 +1289,27 @@ def marcar_sem_simulador(pedidos: list[Pedido]) -> None:
 
     - Sem NF → "Pedido ainda nao faturado" (sem comissão)
     - Com NF, sem simulador:
+        * Vendedor sem comissão → "Sem comissao" (comissão 0)
         * Cliente com comissão fixa → usa o pct da planilha comissoes_fixas como
           estimativa (comissao_compras_pct já preenchida por _aplicar_comissoes_fixas).
           Quando o vendedor adicionar o simulador, calcular_comissoes comparará e
           escolherá o menor.
         * Demais clientes → 2% automático ("Fabricacao interna / simulador ausente")
     """
+    info_vend = carregar_vendedores()
     sem_nf = fab_interna = fab_fixa = 0
     for p in pedidos:
         if p.obs_comissao.strip():
             continue   # já classificado por calcular_comissoes
+
+        # Vendedor sem comissão tem prioridade sobre qualquer outra lógica
+        if not info_vend.tem_comissao(p.nome_vendedor):
+            p.comissao_menor_pct    = 0.0
+            p.valor_comissao_menor  = 0.0
+            p.comissao_compras_pct  = 0.0
+            p.comissao_vendedor_pct = 0.0
+            p.obs_comissao          = "Sem comissao"
+            continue
 
         tem_nf = p.nota_fiscal not in ("-", "", None)
 
@@ -1287,12 +1317,19 @@ def marcar_sem_simulador(pedidos: list[Pedido]) -> None:
             p.obs_comissao = "Pedido ainda nao faturado"
             sem_nf += 1
         elif p.comissao_fixa:
-            # Estimativa com comissão fixa — compras já definida, aguarda simulador
-            pct = p.comissao_compras_pct
-            p.comissao_menor_pct   = pct
-            p.valor_comissao_menor = round(p.valor_faturado * pct, 2)
-            p.obs_comissao         = "Fabricacao interna / simulador ausente"
-            fab_fixa += 1
+            # Estimativa com comissão fixa — compras já definida, aguarda simulador.
+            # Se o vendedor não tem comissão, ignora o fixo e marca como sem comissão.
+            if not info_vend.tem_comissao(p.nome_vendedor):
+                p.comissao_menor_pct   = 0.0
+                p.valor_comissao_menor = 0.0
+                p.obs_comissao         = "Sem comissao"
+                sem_nf += 0  # não conta em nenhum bucket — só garante obs definida
+            else:
+                pct = p.comissao_compras_pct
+                p.comissao_menor_pct   = pct
+                p.valor_comissao_menor = round(p.valor_faturado * pct, 2)
+                p.obs_comissao         = "Fabricacao interna / simulador ausente"
+                fab_fixa += 1
         else:
             # Sem comissão fixa: aplica 2% como estimativa padrão
             p.comissao_menor_pct   = _PCT_FABRICACAO_INTERNA
