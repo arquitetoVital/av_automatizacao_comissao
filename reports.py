@@ -20,23 +20,12 @@ from openpyxl.utils import get_column_letter
 
 import config
 from utils import nome_para_pasta
+from vendedores import carregar_vendedores
 
 log = logging.getLogger(__name__)
 
-# ═══ LISTAS DE FILIAIS ═════════════════════════════════
-
-def _carregar_lista(nome_arquivo: str) -> set[str]:
-    caminho = Path(__file__).parent / nome_arquivo
-    if not caminho.exists():
-        log.warning("  %s nao encontrado.", nome_arquivo)
-        return set()
-    nomes: set[str] = set()
-    for linha in caminho.read_text(encoding="utf-8").splitlines():
-        linha = linha.strip()
-        if linha and not linha.startswith("#"):
-            nomes.add(linha.upper())
-    log.info("  %s carregado: %d entradas.", nome_arquivo, len(nomes))
-    return nomes
+# ═══ LISTAS DE FILIAIS — via vendedores.xlsx ══════════════════
+# Substituído por carregar_vendedores() — ver vendedores.py
 
 
 # ═══ LAYOUT DO EXCEL ═══════════════════════════════════
@@ -85,6 +74,8 @@ COR_LARANJA      = "FFD966"   # laranja        — adicione o simulador na pasta
 # Mapeamento obs → cor de fundo da linha.
 # A cor verde (COR_LINHA_A/B alternado) é aplicada como fallback quando
 # nenhuma obs especial corresponde — ou seja, "Comissao Definida!" e variantes.
+COR_SEM_COMISSAO = "D9D9D9"   # cinza médio    — vendedor sem comissão
+
 _OBS_CORES: dict[str, str] = {
     "Ajuste a planilha de custo":                    COR_ERRO,
     "Analise de Compras pendente!":                  COR_SEM_SIMULAD,
@@ -92,6 +83,7 @@ _OBS_CORES: dict[str, str] = {
     "Fabricacao interna / simulador ausente":        COR_FAB_INTERNA,
     "Adicione o simulador na pasta CUSTO":           COR_LARANJA,
     "Refaturamento":                                 COR_ERRO,    # vermelho — sem comissão
+    "Sem comissao":                                  COR_SEM_COMISSAO,
 }
 
 FMT_MOEDA = "R$ #,##0.00"
@@ -218,13 +210,6 @@ def _nome_abreviado(nome_vendedor: str) -> str:
     return "".join(c for c in abrev if c not in r'\/:*?"<>|')
 
 
-def _pasta_filial(nome_vendedor: str, lista_sp: set[str], lista_mg: set[str]) -> Path | None:
-    chave = nome_para_pasta(nome_vendedor).upper()
-    if chave in lista_sp:
-        return config.PASTA_VENDEDOR_SP
-    if chave in lista_mg:
-        return config.PASTA_VENDEDOR_MG
-    return None
 
 
 # ═══ INTERFACE PÚBLICA ══════════════════════════════════
@@ -286,8 +271,7 @@ def distribuir_para_vendedores(df: pd.DataFrame) -> None:
             int(mask_refatur.sum()),
         )
 
-    lista_sp = _carregar_lista("vendedores_sp.txt")
-    lista_mg = _carregar_lista("vendedores_mg.txt")
+    info_vend = carregar_vendedores()
 
     vendedores = df["Nome_Vendedor"].dropna().unique()
     log.info("  Vendedores: %d", len(vendedores))
@@ -295,7 +279,12 @@ def distribuir_para_vendedores(df: pd.DataFrame) -> None:
     nao_classificados: list[str] = []
 
     for vendedor in sorted(vendedores):
-        pasta_base = _pasta_filial(vendedor, lista_sp, lista_mg)
+        filial = info_vend.filial(vendedor)
+        pasta_base = (
+            config.PASTA_VENDEDOR_SP if filial == "SP"
+            else config.PASTA_VENDEDOR_MG if filial == "MG"
+            else None
+        )
 
         if pasta_base is None:
             nao_classificados.append(vendedor)

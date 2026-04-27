@@ -29,6 +29,7 @@ import database
 from clients import OmieClient
 from models import InfoCusto, Pedido
 from utils import nome_para_pasta
+from vendedores import carregar_vendedores
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +38,13 @@ _EXT_SIMULADOR = {'.xlsx', '.xlsm'}
 
 
 # ═══ UTILITÁRIOS DE DATA ═══════════════════════════════
+
+def _norm(s: str) -> str:
+    """Remove acentos, coloca maiúsculo e strip — usado para comparar nomes."""
+    import unicodedata as _ud
+    s = _ud.normalize("NFD", str(s))
+    return "".join(c for c in s if _ud.category(c) != "Mn").upper().strip()
+
 
 def _normalizar_data(valor) -> str:
     if valor is None or str(valor).strip() in ("", "-"):
@@ -52,59 +60,8 @@ def _normalizar_data(valor) -> str:
     return s
 
 
-# ═══ BLACKLIST ═════════════════════════════════════════
-
-def _carregar_blacklist() -> set[str]:
-    caminho = Path(__file__).parent / "blacklist.txt"
-    if not caminho.exists():
-        log.warning("  blacklist.txt nao encontrado.")
-        return set()
-    nomes: set[str] = set()
-    for linha in caminho.read_text(encoding="utf-8").splitlines():
-        linha = linha.strip()
-        if linha and not linha.startswith("#"):
-            nomes.add(linha.upper())
-    log.info("  Blacklist carregada: %d entradas.", len(nomes))
-    return nomes
-
-
-def _na_blacklist(nome_vendedor: str, blacklist: set[str]) -> bool:
-    return nome_para_pasta(nome_vendedor).upper() in blacklist
-
-
-# ═══ BLACKLIST DE CLIENTES ════════════════════════════
-
-def _normalizar_str(s: str) -> str:
-    """Remove acentos e converte para maiúsculo para comparação normalizada."""
-    import unicodedata
-    s = unicodedata.normalize("NFD", s)
-    return "".join(c for c in s if unicodedata.category(c) != "Mn").upper().strip()
-
-
-def _carregar_blacklist_clientes() -> list[str]:
-    """
-    Lê blacklist_clientes.txt e retorna lista de termos normalizados.
-    Comparação por SUBSTRING — um termo contido no nome bloqueia o cliente.
-    Ex: "ACOS VITAL" bloqueia "ACOS VITAL CHILE LTDA", "ACOS VITAL S.A.", etc.
-    """
-    caminho = Path(__file__).parent / "blacklist_clientes.txt"
-    if not caminho.exists():
-        log.warning("  blacklist_clientes.txt nao encontrado — nenhum cliente ignorado.")
-        return []
-    termos: list[str] = []
-    for linha in caminho.read_text(encoding="utf-8").splitlines():
-        linha = linha.strip()
-        if linha and not linha.startswith("#"):
-            termos.append(_normalizar_str(linha))
-    log.info("  Blacklist clientes: %d termo(s) carregado(s).", len(termos))
-    return termos
-
-
-def _cliente_bloqueado(nome_cliente: str, blacklist_clientes: list[str]) -> bool:
-    """Retorna True se algum termo da blacklist for substring do nome do cliente."""
-    nome_norm = _normalizar_str(nome_cliente)
-    return any(termo in nome_norm for termo in blacklist_clientes)
-
+# ═══ BLACKLIST / VENDEDORES ═══════════════════════════
+# Leitura centralizada em vendedores.py via carregar_vendedores().
 
 # ═══ COMISSÕES FIXAS POR CLIENTE ═══════════════════════
 
@@ -145,7 +102,7 @@ def carregar_comissoes_fixas() -> dict[str, float]:
                 pct = float(valor_str)
                 if pct > 1:       # veio como 2.0 em vez de 0.02
                     pct = pct / 100
-                fixas[_normalizar_str(nome_raw)] = pct
+                fixas[_norm(nome_raw)] = pct
             except ValueError:
                 log.warning("  [COMISSAO-FIXA] Valor inválido para '%s': '%s'", nome_raw, valor_raw)
         wb.close()
@@ -175,7 +132,7 @@ def _aplicar_comissoes_fixas(
         return
     aplicados = 0
     for p in pedidos:
-        chave = _normalizar_str(p.nome_cliente)
+        chave = _norm(p.nome_cliente)
         pct = fixas.get(chave)
         if pct is None:
             continue
@@ -236,8 +193,7 @@ def _data_no_mes(data_str: str) -> bool:
 def extrair_omie() -> list[Pedido]:
     log.info("── Extraindo dados OMIE ──")
     client    = OmieClient()
-    blacklist          = _carregar_blacklist()
-    blacklist_clientes = _carregar_blacklist_clientes()
+    info_vend = carregar_vendedores()
 
     pedidos_raw = client.listar_pedidos()
     idx_pedidos: dict[int, dict] = {}
@@ -287,12 +243,12 @@ def extrair_omie() -> list[Pedido]:
             log.debug("    [SKIP] Pedido %s sem vendedor.", numero_pedido)
             blacklistados += 1
             return None
-        if _na_blacklist(nome_vendedor, blacklist):
+        if info_vend.na_blacklist_vendedor(nome_vendedor):
             log.debug("    [BLACKLIST] Pedido %s (%s).", numero_pedido, nome_vendedor)
             blacklistados += 1
             return None
 
-        if _cliente_bloqueado(nome_cliente, blacklist_clientes):
+        if info_vend.cliente_bloqueado(nome_cliente):
             log.debug(
                 "    [BLACKLIST-CLIENTE] Pedido %s ignorado (cliente: %s).",
                 numero_pedido, nome_cliente,
@@ -475,7 +431,7 @@ def _ler_simuladores_em_paralelo(arquivos: dict[str, Path]) -> dict[str, InfoCus
 
 # ═══ MELHORIA #2 — PASTA CUSTO VAZIA ══════════════════
 
-def _descobrir_simuladores(pasta_base: Path, blacklist: set[str]) -> dict[str, Path]:
+def _descobrir_simuladores(pasta_base: Path, info_vend) -> dict[str, Path]:
     """
     Localiza simuladores na pasta CUSTO de cada vendedor.
     Melhoria #2: cria pasta CUSTO vazia se a pasta do mes existir mas CUSTO nao.
@@ -489,7 +445,7 @@ def _descobrir_simuladores(pasta_base: Path, blacklist: set[str]) -> dict[str, P
     for pasta_vendedor in sorted(pasta_base.iterdir()):
         if not pasta_vendedor.is_dir():
             continue
-        if pasta_vendedor.name.upper() in blacklist or pasta_vendedor.name == config.MES_REF:
+        if info_vend.na_blacklist_vendedor(pasta_vendedor.name) or pasta_vendedor.name == config.MES_REF:
             log.debug("  [BLACKLIST] Pasta ignorada: %s", pasta_vendedor.name)
             continue
 
@@ -631,7 +587,6 @@ def _buscar_simuladores_retroativos(
     ids_nao_encontrados: set[str],
     filial: str,
     pasta_vendedor: Path,
-    blacklist: set[str],
 ) -> dict[str, Path]:
     """
     Para cada ID de pedido não encontrado na pasta CUSTO do vendedor (mês atual),
@@ -1009,7 +964,7 @@ def _mapear_situacao_simuladores(filial: str) -> dict[str, LocalizacaoSimulador]
 
 def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
     log.info("═══ Calculando comissoes ═══")
-    blacklist = _carregar_blacklist()
+    info_vend = carregar_vendedores()
 
     # Carrega e aplica comissões fixas antes do loop de simuladores.
     # Pedidos com comissao_fixa=True já têm comissao_compras_pct definida;
@@ -1033,8 +988,8 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
         chave = p.numero_pedido.strip().zfill(6)
         idx.setdefault(chave, []).append(p)
 
-    sims_sp = _descobrir_simuladores(config.PASTA_VENDEDOR_SP, blacklist)
-    sims_mg = _descobrir_simuladores(config.PASTA_VENDEDOR_MG, blacklist)
+    sims_sp = _descobrir_simuladores(config.PASTA_VENDEDOR_SP, info_vend)
+    sims_mg = _descobrir_simuladores(config.PASTA_VENDEDOR_MG, info_vend)
     sims_vendor = {**sims_sp, **sims_mg}
     log.info(
         "  Simuladores: %d SP + %d MG = %d total.",
@@ -1066,7 +1021,6 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
         ids_nao_encontrados=ids_faltando_sp,
         filial="SP",
         pasta_vendedor=config.PASTA_VENDEDOR_SP,
-        blacklist=blacklist,
     )
     # Busca retroativa: MG (sobre os que ainda faltam após SP)
     sims_retro_mg = _buscar_simuladores_retroativos(
@@ -1078,7 +1032,6 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
         },
         filial="MG",
         pasta_vendedor=config.PASTA_VENDEDOR_MG,
-        blacklist=blacklist,
     )
 
     # Incorpora retroativos ao conjunto de simuladores do vendedor para leitura
@@ -1138,17 +1091,6 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
                 total_skip += 1
                 continue
 
-            # Refaturamento: comissão sempre 0, independente do OK do comprador.
-            # A marcação já foi feita antes do loop; aqui apenas preservamos.
-            if any(getattr(l, "refaturamento", False) for l in linhas_pedido):
-                log.debug(
-                    "    [REFATURAMENTO] Pedido %s ignorado no calculo (comissao 0 mantida).",
-                    id_pedido,
-                )
-                ids_processados.add(id_pedido)
-                total_skip += 1
-                continue
-
             letra_v = str(info_vendor.letra_com or "").strip().upper()
             pct_v   = 0.0 if _is_prejuizo(info_vendor.status) else config.TABELA_COMISSAO.get(letra_v, 0.0)
 
@@ -1166,15 +1108,23 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
             if comprador_ajustou:
                 letra_c   = str(info_comprador.letra_com or "").strip().upper()
                 pct_c     = 0.0 if _is_prejuizo(info_comprador.status) else config.TABELA_COMISSAO.get(letra_c, 0.0)
-                pct_menor = min(pct_v, pct_c)
-                prejuizo  = pct_menor == 0.0 and (
-                    _is_prejuizo(info_vendor.status) or _is_prejuizo(info_comprador.status)
-                )
-                # Comissão fixa é teto absoluto: mesmo com simulador validado pelo
-                # comprador, o pedido nunca paga mais do que o valor fixado para
-                # aquele cliente. O simulador pode estar em OK normalmente, mas o
-                # percentual considerado é limitado ao teto.
-                if tem_fixa and pct_menor > pct_fixa:
+
+                # Prejuízo do VENDEDOR tem prioridade absoluta: se ele marcou
+                # prejuízo no simulador, a comissão é zero independente do que
+                # o comprador validou no OK.
+                prejuizo_vendor   = _is_prejuizo(info_vendor.status)
+                prejuizo_compras  = _is_prejuizo(info_comprador.status)
+
+                if prejuizo_vendor or prejuizo_compras:
+                    pct_menor = 0.0
+                    prejuizo  = True
+                else:
+                    pct_menor = min(pct_v, pct_c)
+                    prejuizo  = False
+
+                # Comissão fixa é teto absoluto: mesmo com simulador validado
+                # pelo comprador, o pedido nunca paga mais que o valor fixado.
+                if not prejuizo and tem_fixa and pct_menor > pct_fixa:
                     pct_menor = pct_fixa
                 obs = "Comissao Definida! - Prejuizo" if prejuizo else "Comissao Definida!"
             elif tem_fixa:
@@ -1194,6 +1144,12 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
                     obs = "Analise de Compras pendente!"
 
             em_erro = (sit == "no_erro")
+
+            # Vendedor sem comissão: zera tudo independente do OK do comprador
+            if not info_vend.tem_comissao(linhas_pedido[0].nome_vendedor):
+                pct_v = pct_c = pct_menor = 0.0
+                obs   = "Sem comissao"
+                em_erro = False
 
             for linha in linhas_pedido:
                 linha.comissao_vendedor_pct = pct_v
@@ -1235,16 +1191,6 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
             linhas_pedido = idx.get(id_pedido)
             if not linhas_pedido:
                 continue
-
-            # Refaturamento: nunca calcular comissão, mesmo com OK do comprador
-            if any(getattr(l, "refaturamento", False) for l in linhas_pedido):
-                log.debug(
-                    "    [REFATURAMENTO-OK] Pedido %s ignorado no retroativo (comissao 0 mantida).",
-                    id_pedido,
-                )
-                ids_processados.add(id_pedido)
-                continue
-
             try:
                 info_ok = _ler_letra_simulador(arq_ok)
                 if info_ok is None:
@@ -1252,11 +1198,17 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
                 letra_c   = str(info_ok.letra_com or "").strip().upper()
                 pct_c     = 0.0 if _is_prejuizo(info_ok.status) else config.TABELA_COMISSAO.get(letra_c, 0.0)
                 # Sem simulador do vendedor disponivel: usa pct_c como pct_v tambem
-                pct_menor = pct_c
-                prejuizo  = pct_menor == 0.0 and _is_prejuizo(info_ok.status)
+                # No retroativo só temos o simulador do comprador (pct_c).
+                # Se compras marcou prejuízo → zero. Caso contrário usa pct_c.
+                prejuizo  = _is_prejuizo(info_ok.status)
+                pct_menor = 0.0 if prejuizo else pct_c
                 obs       = "Comissao Definida! - Prejuizo" if prejuizo else "Comissao Definida!"
+                # Vendedor sem comissão: zera mesmo com OK do comprador
+                if not info_vend.tem_comissao(linhas_pedido[0].nome_vendedor):
+                    pct_c = pct_menor = 0.0
+                    obs   = "Sem comissao"
                 for linha in linhas_pedido:
-                    linha.comissao_vendedor_pct = pct_c   # melhor aproximacao disponivel
+                    linha.comissao_vendedor_pct = pct_c
                     linha.comissao_compras_pct  = pct_c
                     linha.comissao_menor_pct    = pct_menor
                     linha.valor_comissao_menor  = round(linha.valor_faturado * pct_menor, 2)
