@@ -32,7 +32,7 @@ from utils import nome_para_pasta
 
 log = logging.getLogger(__name__)
 
-_THREADS_SIMULADORES = 4
+_THREADS_SIMULADORES = 8
 _EXT_SIMULADOR = {'.xlsx', '.xlsm'}
 
 
@@ -277,6 +277,8 @@ def extrair_omie() -> list[Pedido]:
         codigo_vendedor = adic.get("codVend")
         valor_pedido    = float(tot.get("valor_total_pedido", 0) or 0)
         data_venda      = _normalizar_data(info.get("dInc", ""))
+        codigo_categoria = str(adic.get("codigo_categoria", "") or "").strip()
+        is_refaturamento = (codigo_categoria == "1.01.96")
 
         nome_cliente  = client.consultar_cliente(int(codigo_cliente))  if codigo_cliente  else ""
         nome_vendedor = client.nome_vendedor(int(codigo_vendedor))     if codigo_vendedor else ""
@@ -319,6 +321,7 @@ def extrair_omie() -> list[Pedido]:
             valor_pedido=valor_pedido, data_nota_fiscal=datas_nf,
             nota_fiscal=notas, valor_faturado=valor_faturado,
             valor_pendente=valor_pendente,
+            refaturamento=is_refaturamento,
         )
 
     for n_id_pedido, grupo in agrupado.items():
@@ -1014,6 +1017,17 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
     fixas = carregar_comissoes_fixas()
     _aplicar_comissoes_fixas(pedidos, fixas)
 
+    # Marca refaturamentos imediatamente: comissão 0, obs definida.
+    # Esses pedidos são ignorados por todos os passos seguintes (obs já preenchida).
+    refaturamentos = [p for p in pedidos if p.refaturamento]
+    for p in refaturamentos:
+        p.comissao_menor_pct   = 0.0
+        p.valor_comissao_menor = 0.0
+        p.comissao_compras_pct = 0.0
+        p.obs_comissao         = "Refaturamento"
+    if refaturamentos:
+        log.info("  %d pedido(s) marcado(s) como Refaturamento (comissao 0).", len(refaturamentos))
+
     idx: dict[str, list[Pedido]] = {}
     for p in pedidos:
         chave = p.numero_pedido.strip().zfill(6)
@@ -1124,6 +1138,17 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
                 total_skip += 1
                 continue
 
+            # Refaturamento: comissão sempre 0, independente do OK do comprador.
+            # A marcação já foi feita antes do loop; aqui apenas preservamos.
+            if any(getattr(l, "refaturamento", False) for l in linhas_pedido):
+                log.debug(
+                    "    [REFATURAMENTO] Pedido %s ignorado no calculo (comissao 0 mantida).",
+                    id_pedido,
+                )
+                ids_processados.add(id_pedido)
+                total_skip += 1
+                continue
+
             letra_v = str(info_vendor.letra_com or "").strip().upper()
             pct_v   = 0.0 if _is_prejuizo(info_vendor.status) else config.TABELA_COMISSAO.get(letra_v, 0.0)
 
@@ -1210,6 +1235,16 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
             linhas_pedido = idx.get(id_pedido)
             if not linhas_pedido:
                 continue
+
+            # Refaturamento: nunca calcular comissão, mesmo com OK do comprador
+            if any(getattr(l, "refaturamento", False) for l in linhas_pedido):
+                log.debug(
+                    "    [REFATURAMENTO-OK] Pedido %s ignorado no retroativo (comissao 0 mantida).",
+                    id_pedido,
+                )
+                ids_processados.add(id_pedido)
+                continue
+
             try:
                 info_ok = _ler_letra_simulador(arq_ok)
                 if info_ok is None:

@@ -42,6 +42,10 @@ class Pedido:
     # "menor entre vendedor e compras" quando o vendedor adicionar simulador.
     comissao_fixa: bool = False
 
+    # True quando codigo_categoria == "1.01.96" (Venda Cliente - Refaturamento).
+    # Esses pedidos aparecem no relatório com comissão 0 e obs "Refaturamento".
+    refaturamento: bool = False
+
     def to_dict(self) -> dict:
         """Converte para dicionário com os nomes de coluna usados no Excel/API."""
         return {

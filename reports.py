@@ -91,6 +91,7 @@ _OBS_CORES: dict[str, str] = {
     "Pedido ainda nao faturado":                     COR_SEM_FATURA,
     "Fabricacao interna / simulador ausente":        COR_FAB_INTERNA,
     "Adicione o simulador na pasta CUSTO":           COR_LARANJA,
+    "Refaturamento":                                 COR_ERRO,    # vermelho — sem comissão
 }
 
 FMT_MOEDA = "R$ #,##0.00"
@@ -272,6 +273,17 @@ def distribuir_para_vendedores(df: pd.DataFrame) -> None:
         log.info(
             "  %d linha(s) de fabricacao interna ocultadas nos relatorios dos vendedores.",
             int(mask_fab.sum()),
+        )
+
+    # Refaturamento: vendedor vê o pedido mas sem detalhes de comissão
+    mask_refatur = df["Obs_Comissao"] == "Refaturamento"
+    if mask_refatur.any():
+        df.loc[mask_refatur, "Comissao_Definida_%"]      = 0.0
+        df.loc[mask_refatur, "Valor_Comissao_Calculado"] = 0.0
+        df.loc[mask_refatur, "Obs_Comissao"]             = "Pedido em analise"
+        log.info(
+            "  %d linha(s) de refaturamento ocultadas nos relatorios dos vendedores.",
+            int(mask_refatur.sum()),
         )
 
     lista_sp = _carregar_lista("vendedores_sp.txt")
