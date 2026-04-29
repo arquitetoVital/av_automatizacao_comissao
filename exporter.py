@@ -30,6 +30,7 @@ from pathlib import Path
 import pandas as pd
 
 import config
+from vendedores import carregar_vendedores
 
 log = logging.getLogger(__name__)
 
@@ -43,13 +44,15 @@ _COLUNAS_REMOVER = {
 
 # ── Mapeamento das obs para status legível no frontend ────────────────────────
 _STATUS_MAP: dict[str, str] = {
-    "Comissao Definida!":                  "ok",
-    "Comissao Definida! - Prejuizo":       "prejuizo",
-    "Analise de Compras pendente!":        "pendente",
-    "Ajuste a planilha de custo":          "erro",
-    "Adicione o simulador na pasta CUSTO": "sem_simulador",
-    "Pedido ainda nao faturado":           "sem_nf",
-    "Fabricacao interna":                  "fabricacao_interna",
+    "Comissao Definida!":                       "ok",
+    "Comissao Definida! - Prejuizo":            "prejuizo",
+    "Analise de Compras pendente!":             "pendente",
+    "Ajuste a planilha de custo":               "erro",
+    "Adicione o simulador na pasta CUSTO":      "sem_simulador",
+    "Pedido ainda nao faturado":                "sem_nf",
+    "Fabricacao interna / simulador ausente":   "fabricacao_interna",
+    "Refaturamento":                            "refaturamento",
+    "Sem comissao":                             "sem_comissao",
 }
 
 # ── Renomeação das colunas para camelCase ─────────────────────────────────────
@@ -97,11 +100,22 @@ def _resumo(df: pd.DataFrame) -> dict:
     }
 
 
-def _por_vendedor(df: pd.DataFrame) -> list[dict]:
-    """Agrupa pedidos por vendedor com totais expandidos + lista de pedidos."""
+
+
+
+def _por_vendedor(df: pd.DataFrame, info_vend) -> list[dict]:
+    """
+    Agrupa pedidos por vendedor com totais expandidos + AjudaCusto + lista de pedidos.
+
+    Vendedores cadastrados no vendedores.xlsx mas sem nenhum pedido no período
+    são incluídos com totais zerados e lista de pedidos vazia — necessário para
+    o dashboard exibir ajuda de custo e comissão de todos os vendedores ativos.
+    """
     grupos: list[dict] = []
+    vendedores_com_pedidos: set[str] = set()
 
     for vendedor, df_v in df.groupby("Nome_Vendedor", sort=True):
+        vendedores_com_pedidos.add(str(vendedor))
         mask_fat = df_v.apply(_eh_faturado, axis=1)
 
         pedidos_lista = []
@@ -124,31 +138,67 @@ def _por_vendedor(df: pd.DataFrame) -> list[dict]:
             "valorTotalFaturado":     round(float(df_v["Valor_Faturado"].sum()), 2),
             "valorTotalPendente":     round(float(df_v["Valor_Pendente"].sum()), 2),
             "valorTotalComissao":     round(float(df_v["Valor_Comissao_Calculado"].sum()), 2),
+            "AjudaCusto":             info_vend.ajuda_custo(str(vendedor)),
             "pedidos":                pedidos_lista,
         })
 
+    # Inclui vendedores cadastrados que não tiveram nenhum pedido no período
+    todos_filiais = {
+        **{n.replace("_", " "): f for n, f in {**{k: "SP" for k in info_vend.lista_sp()},
+                                                 **{k: "MG" for k in info_vend.lista_mg()}}.items()}
+    }
+    sem_pedidos = sorted(
+        n for n in todos_filiais
+        if n not in vendedores_com_pedidos and not info_vend.na_blacklist_vendedor(n)
+    )
+    for vendedor in sem_pedidos:
+        grupos.append({
+            "vendedor":               vendedor,
+            "totalPedidos":           0,
+            "totalPedidosFaturados":  0,
+            "totalPedidosAFaturar":   0,
+            "valorTotalFaturado":     0.0,
+            "valorTotalPendente":     0.0,
+            "valorTotalComissao":     0.0,
+            "AjudaCusto":             info_vend.ajuda_custo(vendedor),
+            "pedidos":                [],
+        })
+    if sem_pedidos:
+        log.info(
+            "  %d vendedor(es) sem pedidos no periodo incluidos no JSON.",
+            len(sem_pedidos),
+        )
+
+    # Garante ordem alfabética final (com_pedidos + sem_pedidos misturados)
+    grupos.sort(key=lambda x: x["vendedor"])
     return grupos
 
 
 def gerar_json(df: pd.DataFrame) -> dict:
     """Converte o DataFrame do coordenador no dicionário do dashboard."""
-    resumo  = _resumo(df)
+    info_vend      = carregar_vendedores()
+    resumo         = _resumo(df)
+    vendedores     = _por_vendedor(df, info_vend)
+    total_ajuda    = round(sum(v["AjudaCusto"] for v in vendedores), 2)
+    resumo["totalAjudaCusto"] = total_ajuda
+
     payload = {
         "mes":        config.MES_REF,
         "ano_mes":    config.ANO_MES_REF,
         "gerado_em":  datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
         "resumo":     resumo,
-        "vendedores": _por_vendedor(df),
+        "vendedores": vendedores,
     }
     log.info(
         "  JSON: %d vendedores | %d pedidos (%d fat. / %d a fat.) | "
-        "R$ %.2f faturado | R$ %.2f comissao",
-        len(payload["vendedores"]),
+        "R$ %.2f faturado | R$ %.2f comissao | R$ %.2f ajuda de custo",
+        len(vendedores),
         resumo["totalPedidos"],
         resumo["totalPedidosFaturados"],
         resumo["totalPedidosAFaturar"],
         resumo["valorTotalFaturado"],
         resumo["valorTotalComissao"],
+        total_ajuda,
     )
     return payload
 

@@ -62,6 +62,9 @@ class InfoVendedores:
     # blacklist de clientes — termos normalizados para busca por substring
     _bl_clientes: list[str]            = field(default_factory=list)
 
+    # {chave_pasta → valor float} — ajuda de custo mensal do vendedor
+    _ajuda_custo: dict[str, float]     = field(default_factory=dict)
+
     def _chave(self, nome_vendedor: str) -> str:
         return _nome_para_pasta(nome_vendedor).upper()
 
@@ -85,6 +88,14 @@ class InfoVendedores:
         return any(termo in nome_norm for termo in self._bl_clientes)
 
     # ── Listas para uso no reports.py ────────────────────────────────────────
+
+    def ajuda_custo(self, nome_vendedor: str) -> float:
+        """Retorna o valor de ajuda de custo mensal do vendedor (0.0 se não definido)."""
+        return self._ajuda_custo.get(self._chave(nome_vendedor), 0.0)
+
+    def todos_ajuda_custo(self) -> dict[str, float]:
+        """Retorna dict {nome_pasta → valor} com todos os vendedores que têm ajuda de custo."""
+        return dict(self._ajuda_custo)
 
     def lista_sp(self) -> set[str]:
         """Conjunto de chaves (formato pasta) dos vendedores SP."""
@@ -122,7 +133,7 @@ def carregar_vendedores() -> InfoVendedores:
         ws = wb["VENDEDORES"]
         total = sem_com = 0
         for row in ws.iter_rows(min_row=2, values_only=True):
-            nome, filial, comissao = (row + (None, None, None))[:3]
+            nome, filial, comissao, ajuda = (row + (None, None, None, None))[:4]
             if not nome:
                 continue
             chave  = _nome_para_pasta(str(nome)).upper()
@@ -134,11 +145,20 @@ def carregar_vendedores() -> InfoVendedores:
             if com in ("NAO", "NÃO", "N", "NO", "FALSE", "0"):
                 info._sem_comissao.add(chave)
                 sem_com += 1
+            # Coluna D: Ajuda de Custo (float ou vazio)
+            if ajuda is not None:
+                try:
+                    valor_ajuda = float(str(ajuda).replace(",", ".").strip())
+                    if valor_ajuda > 0:
+                        info._ajuda_custo[chave] = valor_ajuda
+                except (ValueError, TypeError):
+                    pass
         log.info(
-            "  VENDEDORES: %d cadastrados | %d sem comissao | %d SP | %d MG",
+            "  VENDEDORES: %d cadastrados | %d sem comissao | %d SP | %d MG | %d com ajuda de custo",
             total, sem_com,
             sum(1 for v in info._filiais.values() if v == "SP"),
             sum(1 for v in info._filiais.values() if v == "MG"),
+            len(info._ajuda_custo),
         )
     else:
         log.warning("  Aba VENDEDORES nao encontrada em vendedores.xlsx.")

@@ -1,4 +1,0 @@
-# blacklist.txt
-# Vendedores/pastas a ignorar no cálculo de comissão (filial MG ou entradas inválidas).
-# Um nome por linha, no formato de pasta (underscores). Linhas com # são comentários.
-# Para adicionar ou remover, edite este arquivo — sem mexer no código.
