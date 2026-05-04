@@ -34,9 +34,19 @@ OMIE_APP_KEY    = os.environ["OMIE_APP_KEY"]
 OMIE_APP_SECRET = os.environ["OMIE_APP_SECRET"]
 
 # ═══════════════════════════════════════════════════════
-#  MÊS DE REFERÊNCIA — alterar apenas esta linha
+#  MÊS DE REFERÊNCIA
 # ═══════════════════════════════════════════════════════
-_MES = date(2026, 4, 1)   # ← única linha a editar a cada mês
+#
+#  MODO_AUTO=true  → usa o mês corrente automaticamente (ideal para agendador)
+#  MODO_AUTO=false → usa a data definida em _MES_MANUAL  (ideal para reprocessar meses passados)
+#
+#  Para alternar via variável de ambiente (ou .env):
+#    MODO_AUTO=true
+#    MODO_AUTO=false
+#
+_MODO_AUTO  = os.getenv("MODO_AUTO", "true").lower() == "true"
+_MES_MANUAL = date(2026, 4, 1)   # ← editar apenas quando MODO_AUTO=false
+_MES        = date.today().replace(day=1) if _MODO_AUTO else _MES_MANUAL
 
 _MESES_PT = {
     1: "JANEIRO", 2: "FEVEREIRO", 3: "MARÇO",    4: "ABRIL",
