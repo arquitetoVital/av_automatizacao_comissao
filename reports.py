@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 # "Comissao_Vendedor_%" exibe como "Comissao Simulador"
 # "Menor_Comissao_%"   exibe como "Comissao Real"
 _RENOMEAR_HEADER: dict[str, str] = {
+    "Margem_%":            "Margem",
     "Comissao_Vendedor_%": "Comissao Simulador",
     "Comissao_Compras_%":  "Comissao Compras",
     "Menor_Comissao_%":    "Comissao Real",
@@ -44,23 +45,25 @@ COLUNAS_COORD = [
     "Data_Venda", "Numero_Pedido", "Nome_Cliente", "Nome_Vendedor",
     "Valor_Pedido", "Data_Nota_Fiscal", "Nota_Fiscal",
     "Valor_Faturado", "Valor_Pendente",
+    "Margem_%",
     "Comissao_Vendedor_%", "Comissao_Compras_%", "Menor_Comissao_%",
     "Valor_Comissao_Calculado",
     "Obs_Comissao",
 ]
-LARGURAS_COORD = [14, 16, 32, 28, 14, 18, 14, 15, 15, 22, 18, 16, 22, 40]
+LARGURAS_COORD = [14, 16, 32, 28, 14, 18, 14, 15, 15, 12, 22, 18, 16, 22, 40]
 
 COLUNAS_VENDOR = [
     "Data_Venda", "Numero_Pedido", "Nome_Cliente", "Nome_Vendedor",
     "Valor_Pedido", "Data_Nota_Fiscal", "Nota_Fiscal",
     "Valor_Faturado", "Valor_Pendente",
+    "Margem_%",
     "Comissao_Definida_%", "Valor_Comissao_Calculado",
     "Obs_Comissao",
 ]
-LARGURAS_VENDOR = [14, 16, 32, 28, 14, 18, 14, 15, 15, 18, 22, 40]
+LARGURAS_VENDOR = [14, 16, 32, 28, 14, 18, 14, 15, 15, 12, 18, 22, 40]
 
 COLUNAS_MOEDA = {"Valor_Pedido", "Valor_Faturado", "Valor_Pendente", "Valor_Comissao_Calculado"}
-COLUNAS_PCT   = {"Comissao_Vendedor_%", "Comissao_Compras_%", "Menor_Comissao_%", "Comissao_Definida_%"}
+COLUNAS_PCT   = {"Margem_%", "Comissao_Vendedor_%", "Comissao_Compras_%", "Menor_Comissao_%", "Comissao_Definida_%"}
 
 COR_HEADER       = "1F4E79"
 COR_LINHA_A      = "E2EFDA"   # linhas pares — verde claro  (Comissao Definida!)
@@ -270,6 +273,20 @@ def distribuir_para_vendedores(df: pd.DataFrame) -> None:
             "  %d linha(s) de refaturamento ocultadas nos relatorios dos vendedores.",
             int(mask_refatur.sum()),
         )
+
+    # Estimativa condicional: comprador ainda não validou com a margem atingida.
+    # Exibe o pedido mas sem valor de comissão — para não criar expectativa.
+    if "_estimativa_condicional" in df.columns or "estimativa_condicional" in df.columns:
+        col_est = "estimativa_condicional" if "estimativa_condicional" in df.columns else "_estimativa_condicional"
+        mask_est = df[col_est].astype(bool)
+        if mask_est.any():
+            df.loc[mask_est, "Comissao_Definida_%"]      = 0.0
+            df.loc[mask_est, "Valor_Comissao_Calculado"] = 0.0
+            df.loc[mask_est, "Margem_%"]                 = 0.0
+            log.info(
+                "  %d linha(s) com estimativa condicional ocultadas do relatorio do vendedor.",
+                int(mask_est.sum()),
+            )
 
     info_vend = carregar_vendedores()
 

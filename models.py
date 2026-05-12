@@ -32,6 +32,14 @@ class Pedido:
     comissao_menor_pct:      float = 0.0
     valor_comissao_menor:    float = 0.0
 
+    # Margem lida da célula AC8 do simulador do vendedor (0.0 se não disponível)
+    margem_simulador:        float = 0.0
+
+    # True quando a comissão foi calculada com o teto condicional mas o comprador
+    # ainda não validou. Nesses casos o valor NÃO é exibido no relatório do vendedor
+    # (para não criar expectativa de uma comissão que pode mudar).
+    estimativa_condicional:  bool  = False
+
     obs_comissao: str = ""
 
     # Flag de cor vermelha nos relatórios (simulador rejeitado pelo comprador)
@@ -58,6 +66,7 @@ class Pedido:
             "Nota_Fiscal":              self.nota_fiscal,
             "Valor_Faturado":           self.valor_faturado,
             "Valor_Pendente":           self.valor_pendente,
+            "Margem_%":                 self.margem_simulador,
             "Comissao_Vendedor_%":      self.comissao_vendedor_pct,
             "Comissao_Compras_%":       self.comissao_compras_pct,
             "Menor_Comissao_%":         self.comissao_menor_pct,
@@ -72,4 +81,5 @@ class InfoCusto:
 
     id_pedido: str
     letra_com: str | None    # célula Z5
-    status:    str | None = None   # célula AB12 — "Prejuízo" zera comissão
+    status:    str | None  = None   # célula AB12 — "Prejuízo" zera comissão
+    margem:    float | None = None  # célula AC8  — porcentagem de margem

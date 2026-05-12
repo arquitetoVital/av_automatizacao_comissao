@@ -1,3 +1,4 @@
+import os
 """
 services.py
 ───────────
@@ -67,24 +68,67 @@ def _normalizar_data(valor) -> str:
 
 def carregar_comissoes_fixas() -> dict[str, float]:
     """
-    Lê comissoes_fixas.xlsx (colunas CLIENTE | COMISSAO PADRÃO) e retorna
-    um dicionário {nome_cliente_normalizado: percentual_float}.
+    Lê comissoes_fixas.xlsx e retorna um dicionário de regras por cliente.
 
-    Exemplos de valor aceito na coluna COMISSAO PADRÃO:
-      "2%"  → 0.02     "1,3%" → 0.013    "0.7%" → 0.007    "0.02" → 0.02
+    Colunas esperadas:
+      A: CLIENTE | B: COMISSAO PADRÃO | C: COMISSAO CONDICIONAL | D: MARGEM
 
-    O arquivo deve estar na mesma pasta do script.
-    Se não existir ou estiver vazio, retorna {} sem interromper a execução.
+    Caminho resolvido na seguinte ordem de prioridade:
+      1. Variável de ambiente COMISSOES_FIXAS_PATH (caminho absoluto ou relativo)
+      2. Mesmo diretório do services.py  (padrão)
     """
-    caminho = Path(__file__).parent / "comissoes_fixas.xlsx"
+    caminho_env = os.getenv("COMISSOES_FIXAS_PATH", "")
+    if caminho_env:
+        caminho = Path(caminho_env)
+    else:
+        # Usa caminho relativo ao diretório de trabalho (mesmo padrão do config.py)
+        caminho = Path("comissoes_fixas.xlsx")
+
+    log.info("  Comissoes fixas: buscando em '%s'", caminho.resolve())
+
     if not caminho.exists():
-        log.warning("  comissoes_fixas.xlsx nao encontrado — nenhuma comissao fixa aplicada.")
+        log.warning(
+            "  comissoes_fixas.xlsx nao encontrado em '%s' — nenhuma comissao fixa aplicada.",
+            caminho.resolve(),
+        )
         return {}
 
-    fixas: dict[str, float] = {}
+    fixas: dict[str, dict] = {}   # {nome_norm: {pct, pct_condicional?, margem_minima?}}
     try:
         wb = openpyxl.load_workbook(caminho, read_only=True, data_only=True)
         ws = wb.active
+        # Colunas: A=CLIENTE | B=COMISSAO PADRÃO | C=COMISSAO CONDICIONAL | D=MARGEM
+        def _parse_pct(s) -> float | None:
+            """Parse de percentual de comissão: '2%' ou 2 → 0.02"""
+            if s is None:
+                return None
+            s = str(s).replace("%", "").replace(",", ".").strip()
+            if not s:
+                return None
+            try:
+                v = float(s)
+                return v / 100 if v > 1 else v
+            except ValueError:
+                return None
+
+        def _parse_margem(s) -> float | None:
+            """
+            Parse da margem mínima da planilha de fixas.
+            Tanto a planilha (ex: 1 = 100%) quanto AC8 do simulador (ex: 0.35 = 35%)
+            usam a mesma escala decimal — basta converter para float sem dividir.
+            Exemplos: planilha=1 → 1.0 | planilha=0.5 → 0.5 | AC8=0.35 → 0.35
+            Comparação direta: AC8 (0.35) >= margem_minima (1.0) → False ✓
+            """
+            if s is None:
+                return None
+            s = str(s).replace("%", "").replace(",", ".").strip()
+            if not s:
+                return None
+            try:
+                return float(s)
+            except ValueError:
+                return None
+
         cabecalho_pulado = False
         for row in ws.iter_rows(values_only=True):
             if not cabecalho_pulado:
@@ -92,19 +136,23 @@ def carregar_comissoes_fixas() -> dict[str, float]:
                 continue
             if not row or row[0] is None:
                 continue
-            nome_raw  = str(row[0]).strip()
-            valor_raw = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ""
-            if not nome_raw or not valor_raw:
+            nome_raw   = str(row[0]).strip()
+            pct        = _parse_pct(row[1] if len(row) > 1 else None)
+            pct_cond   = _parse_pct(row[2] if len(row) > 2 else None)
+            margem_min = _parse_margem(row[3] if len(row) > 3 else None)
+
+            if not nome_raw or pct is None:
+                if nome_raw and pct is None:
+                    log.warning("  [COMISSAO-FIXA] Valor inválido para '%s'", nome_raw)
                 continue
-            # Normaliza percentual: "2%" → 0.02 | "1,3%" → 0.013 | "0.02" → 0.02
-            valor_str = valor_raw.replace("%", "").replace(",", ".").strip()
-            try:
-                pct = float(valor_str)
-                if pct > 1:       # veio como 2.0 em vez de 0.02
-                    pct = pct / 100
-                fixas[_norm(nome_raw)] = pct
-            except ValueError:
-                log.warning("  [COMISSAO-FIXA] Valor inválido para '%s': '%s'", nome_raw, valor_raw)
+
+            entrada: dict = {"pct": pct}
+            if pct_cond is not None:
+                entrada["pct_condicional"] = pct_cond
+            if margem_min is not None:
+                entrada["margem_minima"] = margem_min
+
+            fixas[_norm(nome_raw)] = entrada
         wb.close()
     except Exception as exc:
         log.error("  [COMISSAO-FIXA] Erro ao ler '%s': %s", caminho, exc)
@@ -116,28 +164,33 @@ def carregar_comissoes_fixas() -> dict[str, float]:
 
 def _aplicar_comissoes_fixas(
     pedidos: list,
-    fixas: dict[str, float],
+    fixas: dict[str, dict],
 ) -> None:
     """
     Para cada pedido cujo cliente consta em `fixas`:
-      - Define comissao_compras_pct com o percentual da planilha.
-      - Define comissao_fixa = True (sinaliza que compras já está definida).
-      - Se o pedido já tiver NF mas ainda não tiver simulador do vendedor,
-        aplica o percentual também em comissao_menor_pct / valor_comissao_menor
-        como estimativa (obs = "Fabricacao interna / simulador ausente").
-        Quando o vendedor adicionar o simulador, calcular_comissoes() vai
-        comparar e escolher o menor normalmente.
+      - Define comissao_compras_pct com o percentual padrão da planilha.
+      - Guarda _pct_condicional e _margem_minima no pedido para uso em
+        calcular_comissoes(): se a margem do simulador >= margem_minima,
+        o teto passa a ser pct_condicional em vez do pct padrão.
+      - Define comissao_fixa = True.
     """
     if not fixas:
         return
     aplicados = 0
     for p in pedidos:
-        chave = _norm(p.nome_cliente)
-        pct = fixas.get(chave)
-        if pct is None:
+        chave_cliente = _norm(p.nome_cliente)
+        entrada = fixas.get(chave_cliente)
+        if entrada is None:
+            for chave_fixa, val in fixas.items():
+                if chave_fixa in chave_cliente or chave_cliente in chave_fixa:
+                    entrada = val
+                    break
+        if entrada is None:
             continue
-        p.comissao_compras_pct = pct
+        p.comissao_compras_pct = entrada["pct"]
         p.comissao_fixa        = True
+        p._pct_condicional     = entrada.get("pct_condicional")
+        p._margem_minima       = entrada.get("margem_minima")
         aplicados += 1
 
     if aplicados:
@@ -349,7 +402,7 @@ def _extrair_id_pedido(stem: str) -> str | None:
 
 
 _NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-_CELULAS_ALVO = {"Z5", "AB12"}
+_CELULAS_ALVO = {"Z5", "AB12", "AC8"}
 
 
 def _carregar_shared_strings(zf: zipfile.ZipFile) -> list[str]:
@@ -395,7 +448,7 @@ def _ler_letra_simulador(arq: Path) -> InfoCusto | None:
         root = ET.fromstring(sheet_xml)
         encontrados: dict[str, object] = {}
         for row in root.iter(f"{{{_NS}}}row"):
-            if row.get("r") not in ("5", "12"):
+            if row.get("r") not in ("5", "8", "12"):
                 continue
             for c in row.findall(f"{{{_NS}}}c"):
                 ref = c.get("r", "")
@@ -403,10 +456,18 @@ def _ler_letra_simulador(arq: Path) -> InfoCusto | None:
                     encontrados[ref] = _resolver_valor(c, shared)
             if len(encontrados) == len(_CELULAS_ALVO):
                 break
-        letra_com = encontrados.get("Z5")
-        status    = encontrados.get("AB12")
-        log.debug("    '%s' -> ID %s | letra='%s' | status='%s'", arq.name, id_pedido, letra_com, status)
-        return InfoCusto(id_pedido=id_pedido, letra_com=letra_com, status=status)
+        letra_com  = encontrados.get("Z5")
+        status     = encontrados.get("AB12")
+        margem_raw = encontrados.get("AC8")
+        try:
+            margem = float(margem_raw) if margem_raw is not None else None
+        except (ValueError, TypeError):
+            margem = None
+        log.debug(
+            "    '%s' -> ID %s | letra='%s' | status='%s' | margem=%s",
+            arq.name, id_pedido, letra_com, status, margem,
+        )
+        return InfoCusto(id_pedido=id_pedido, letra_com=letra_com, status=status, margem=margem)
     except Exception as exc:
         log.exception("    [ERRO] Lendo '%s': %s", arq.name, exc)
         return None
@@ -983,25 +1044,6 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
     if refaturamentos:
         log.info("  %d pedido(s) marcado(s) como Refaturamento (comissao 0).", len(refaturamentos))
 
-    # Marca vendedores sem comissão imediatamente: comissão 0, obs definida.
-    # Tem prioridade sobre simuladores, OK de compras e comissões fixas —
-    # esses pedidos aparecem no relatório mas nunca recebem valor de comissão.
-    sem_comissao_marcados = [
-        p for p in pedidos
-        if not p.obs_comissao.strip() and not info_vend.tem_comissao(p.nome_vendedor)
-    ]
-    for p in sem_comissao_marcados:
-        p.comissao_menor_pct   = 0.0
-        p.valor_comissao_menor = 0.0
-        p.comissao_compras_pct = 0.0
-        p.comissao_vendedor_pct = 0.0
-        p.obs_comissao         = "Sem comissao"
-    if sem_comissao_marcados:
-        log.info(
-            "  %d pedido(s) de vendedor(es) sem comissao marcados (comissao 0).",
-            len(sem_comissao_marcados),
-        )
-
     idx: dict[str, list[Pedido]] = {}
     for p in pedidos:
         chave = p.numero_pedido.strip().zfill(6)
@@ -1107,11 +1149,60 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
 
             info_vendor = infos_vendor.get(nome_arq)
             if info_vendor is None:
-                total_skip += 1
+                # Simulador do vendedor não foi lido (arquivo corrompido, senha, etc.).
+                # Tenta processar pelo simulador do comprador /OK neste momento,
+                # com o teto de fixas aplicado — para não cair no loop retroativo
+                # sem teto.
+                nome_comprador_fallback = idx_comprador.get(_nome_base(nome_arq))
+                info_ok_fallback = (
+                    infos_comprador.get(nome_comprador_fallback.name)
+                    if nome_comprador_fallback else None
+                )
+                if info_ok_fallback is not None:
+                    letra_fb  = str(info_ok_fallback.letra_com or "").strip().upper()
+                    prej_fb   = _is_prejuizo(info_ok_fallback.status)
+                    pct_c_fb  = 0.0 if prej_fb else config.TABELA_COMISSAO.get(letra_fb, 0.0)
+                    tem_fixa_fb = any(getattr(l, "comissao_fixa", False) for l in linhas_pedido)
+                    if tem_fixa_fb and not prej_fb:
+                        pct_cond_fb  = getattr(linhas_pedido[0], "_pct_condicional", None)
+                        margem_min_fb = getattr(linhas_pedido[0], "_margem_minima",  None)
+                        pct_pad_fb   = linhas_pedido[0].comissao_compras_pct
+                        margem_fb    = info_ok_fallback.margem
+                        cond_fb = (
+                            pct_cond_fb is not None
+                            and margem_min_fb is not None
+                            and margem_fb is not None
+                            and margem_fb >= margem_min_fb
+                        )
+                        teto_fb   = pct_cond_fb if cond_fb else pct_pad_fb
+                        pct_men_fb = min(pct_c_fb, teto_fb)
+                    else:
+                        pct_men_fb = 0.0 if prej_fb else pct_c_fb
+                    obs_fb = "Comissao Definida! - Prejuizo" if prej_fb else "Comissao Definida!"
+                    if not info_vend.tem_comissao(linhas_pedido[0].nome_vendedor):
+                        pct_c_fb = pct_men_fb = 0.0
+                        obs_fb = "Sem comissao"
+                    for linha in linhas_pedido:
+                        linha.comissao_vendedor_pct  = pct_c_fb
+                        linha.comissao_compras_pct   = pct_c_fb
+                        linha.comissao_menor_pct     = pct_men_fb
+                        linha.valor_comissao_menor   = round(linha.valor_faturado * pct_men_fb, 2)
+                        linha.margem_simulador       = info_ok_fallback.margem or 0.0
+                        linha.estimativa_condicional = False
+                        linha.obs_comissao           = obs_fb
+                        linha.em_erro                = False
+                    ids_processados.add(id_pedido)
+                    log.info(
+                        "    [FALLBACK-OK] Pedido %s: vendor ilegível, processado via /OK com teto.",
+                        id_pedido,
+                    )
+                else:
+                    total_skip += 1
                 continue
 
-            letra_v = str(info_vendor.letra_com or "").strip().upper()
-            pct_v   = 0.0 if _is_prejuizo(info_vendor.status) else config.TABELA_COMISSAO.get(letra_v, 0.0)
+            letra_v        = str(info_vendor.letra_com or "").strip().upper()
+            pct_v          = 0.0 if _is_prejuizo(info_vendor.status) else config.TABELA_COMISSAO.get(letra_v, 0.0)
+            margem_vendor  = info_vendor.margem  # float | None — lida de AC8
 
             nome_comprador    = idx_comprador.get(_nome_base(nome_arq))
             info_comprador    = infos_comprador.get(nome_comprador.name) if nome_comprador else None
@@ -1120,39 +1211,75 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
             loc_coord = situacao_coord.get(id_pedido)
             sit = loc_coord.situacao if loc_coord else "nao_existe"
 
-            # Verifica se alguma linha deste pedido tem comissão fixa
-            tem_fixa      = any(getattr(l, "comissao_fixa", False) for l in linhas_pedido)
-            pct_fixa      = linhas_pedido[0].comissao_compras_pct if tem_fixa else 0.0
+            # ── Dados de comissão fixa para este pedido ──────────────────────────
+            tem_fixa     = any(getattr(l, "comissao_fixa", False) for l in linhas_pedido)
+            pct_cond     = getattr(linhas_pedido[0], "_pct_condicional", None) if tem_fixa else None
+            margem_min   = getattr(linhas_pedido[0], "_margem_minima",   None) if tem_fixa else None
+            pct_padrao   = linhas_pedido[0].comissao_compras_pct          if tem_fixa else None
+
+            # Teto efetivo:
+            #   - condicional entra se margem do simulador >= margem_minima
+            #   - mesmo com condicional ativa, ainda é um TETO (compete com compras)
+            #   - se condicional não existe ou margem não atingida → usa pct_padrao
+            condicional_ativa = (
+                pct_cond is not None
+                and margem_min is not None
+                and margem_vendor is not None
+                and margem_vendor >= margem_min
+            )
+            teto_fixa = pct_cond if condicional_ativa else pct_padrao   # None se sem fixa
+
+            # ── Cálculo principal ─────────────────────────────────────────────────
+            #
+            # PEDIDOS COM CLIENTE NA PLANILHA DE FIXAS:
+            #   pct_final = min(pct_vendedor, pct_compras, teto_fixa)
+            #   Sem validação do comprador → min(pct_vendedor, teto_fixa) como estimativa
+            #
+            # PEDIDOS SEM FIXAS:
+            #   pct_final = min(pct_vendedor, pct_compras)
+            #   A tabela já limita naturalmente (A=2%, B=1.3%, C=0.7%, D=0.5%)
+            #
+            # PREJUÍZO (vendedor ou comprador) → zera em qualquer caso
+
+            # Flag: estimativa condicional ainda não confirmada pelo comprador
+            # (usado em reports para ocultar valor do relatório do vendedor)
+            estimativa_condicional = condicional_ativa and not comprador_ajustou
 
             if comprador_ajustou:
-                letra_c   = str(info_comprador.letra_com or "").strip().upper()
-                pct_c     = 0.0 if _is_prejuizo(info_comprador.status) else config.TABELA_COMISSAO.get(letra_c, 0.0)
-
-                # Prejuízo do VENDEDOR tem prioridade absoluta: se ele marcou
-                # prejuízo no simulador, a comissão é zero independente do que
-                # o comprador validou no OK.
-                prejuizo_vendor   = _is_prejuizo(info_vendor.status)
-                prejuizo_compras  = _is_prejuizo(info_comprador.status)
+                letra_c          = str(info_comprador.letra_com or "").strip().upper()
+                prejuizo_vendor  = _is_prejuizo(info_vendor.status)
+                prejuizo_compras = _is_prejuizo(info_comprador.status)
 
                 if prejuizo_vendor or prejuizo_compras:
+                    pct_c     = 0.0
                     pct_menor = 0.0
                     prejuizo  = True
                 else:
+                    pct_c = config.TABELA_COMISSAO.get(letra_c, 0.0)
+                    # min entre vendedor e compras, depois aplica teto fixa se houver
                     pct_menor = min(pct_v, pct_c)
-                    prejuizo  = False
+                    if teto_fixa is not None and pct_menor > teto_fixa:
+                        pct_menor = teto_fixa
+                    prejuizo = False
 
-                # Comissão fixa é teto absoluto: mesmo com simulador validado
-                # pelo comprador, o pedido nunca paga mais que o valor fixado.
-                if not prejuizo and tem_fixa and pct_menor > pct_fixa:
-                    pct_menor = pct_fixa
                 obs = "Comissao Definida! - Prejuizo" if prejuizo else "Comissao Definida!"
+
             elif tem_fixa:
-                # Comprador ainda não avaliou, mas comissão já está definida pela
-                # planilha de fixas — compara com o simulador do vendedor e usa a menor.
-                pct_c     = pct_fixa
-                pct_menor = min(pct_v, pct_c)
-                prejuizo  = pct_menor == 0.0 and _is_prejuizo(info_vendor.status)
+                # Sem validação do comprador, mas teto definido pela planilha de fixas.
+                # Estimativa: min(pct_vendedor, teto_fixa).
+                # Se condicional ativa mas sem comprador → estimativa condicional
+                # (não exibida para o vendedor).
+                prejuizo_vendor = _is_prejuizo(info_vendor.status)
+                if prejuizo_vendor:
+                    pct_c     = teto_fixa
+                    pct_menor = 0.0
+                    prejuizo  = True
+                else:
+                    pct_c     = teto_fixa
+                    pct_menor = min(pct_v, teto_fixa)
+                    prejuizo  = False
                 obs = "Comissao Definida! - Prejuizo" if prejuizo else "Comissao Definida!"
+
             else:
                 pct_c     = 0.0
                 pct_menor = 0.0
@@ -1171,12 +1298,14 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
                 em_erro = False
 
             for linha in linhas_pedido:
-                linha.comissao_vendedor_pct = pct_v
-                linha.comissao_compras_pct  = pct_c
-                linha.comissao_menor_pct    = pct_menor
-                linha.valor_comissao_menor  = round(linha.valor_faturado * pct_menor, 2)
-                linha.obs_comissao          = obs
-                linha.em_erro               = em_erro
+                linha.comissao_vendedor_pct    = pct_v
+                linha.comissao_compras_pct     = pct_c
+                linha.comissao_menor_pct       = pct_menor
+                linha.valor_comissao_menor     = round(linha.valor_faturado * pct_menor, 2)
+                linha.margem_simulador         = margem_vendor if margem_vendor is not None else 0.0
+                linha.estimativa_condicional   = estimativa_condicional
+                linha.obs_comissao             = obs
+                linha.em_erro                  = em_erro
 
             ids_processados.add(id_pedido)
             n = len(linhas_pedido)
@@ -1214,25 +1343,49 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
                 info_ok = _ler_letra_simulador(arq_ok)
                 if info_ok is None:
                     continue
-                letra_c   = str(info_ok.letra_com or "").strip().upper()
-                pct_c     = 0.0 if _is_prejuizo(info_ok.status) else config.TABELA_COMISSAO.get(letra_c, 0.0)
-                # Sem simulador do vendedor disponivel: usa pct_c como pct_v tambem
-                # No retroativo só temos o simulador do comprador (pct_c).
-                # Se compras marcou prejuízo → zero. Caso contrário usa pct_c.
-                prejuizo  = _is_prejuizo(info_ok.status)
-                pct_menor = 0.0 if prejuizo else pct_c
-                obs       = "Comissao Definida! - Prejuizo" if prejuizo else "Comissao Definida!"
+                letra_c  = str(info_ok.letra_com or "").strip().upper()
+                prejuizo = _is_prejuizo(info_ok.status)
+                pct_c    = 0.0 if prejuizo else config.TABELA_COMISSAO.get(letra_c, 0.0)
+
+                # Sem simulador do vendedor disponível neste loop: usa pct_c como estimativa
+                # de pct_v também — e a margem do comprador como referência.
+                pct_v_retro  = pct_c
+                margem_retro = info_ok.margem  # AC8 do simulador do comprador
+
+                # Aplica teto de comissão fixa se o cliente estiver na planilha
+                tem_fixa_retro = any(getattr(l, "comissao_fixa", False) for l in linhas_pedido)
+                if tem_fixa_retro and not prejuizo:
+                    pct_cond_r  = getattr(linhas_pedido[0], "_pct_condicional", None)
+                    margem_min_r = getattr(linhas_pedido[0], "_margem_minima",  None)
+                    pct_pad_r   = linhas_pedido[0].comissao_compras_pct
+
+                    cond_ativa_r = (
+                        pct_cond_r  is not None
+                        and margem_min_r is not None
+                        and margem_retro is not None
+                        and margem_retro >= margem_min_r
+                    )
+                    teto_r   = pct_cond_r if cond_ativa_r else pct_pad_r
+                    pct_menor = min(pct_c, teto_r)
+                else:
+                    pct_menor = 0.0 if prejuizo else pct_c
+
+                obs = "Comissao Definida! - Prejuizo" if prejuizo else "Comissao Definida!"
+
                 # Vendedor sem comissão: zera mesmo com OK do comprador
                 if not info_vend.tem_comissao(linhas_pedido[0].nome_vendedor):
-                    pct_c = pct_menor = 0.0
-                    obs   = "Sem comissao"
+                    pct_v_retro = pct_c = pct_menor = 0.0
+                    obs = "Sem comissao"
+
                 for linha in linhas_pedido:
-                    linha.comissao_vendedor_pct = pct_c
-                    linha.comissao_compras_pct  = pct_c
-                    linha.comissao_menor_pct    = pct_menor
-                    linha.valor_comissao_menor  = round(linha.valor_faturado * pct_menor, 2)
-                    linha.obs_comissao          = obs
-                    linha.em_erro               = False
+                    linha.comissao_vendedor_pct  = pct_v_retro
+                    linha.comissao_compras_pct   = pct_c
+                    linha.comissao_menor_pct     = pct_menor
+                    linha.valor_comissao_menor   = round(linha.valor_faturado * pct_menor, 2)
+                    linha.margem_simulador       = margem_retro if margem_retro is not None else 0.0
+                    linha.estimativa_condicional = False
+                    linha.obs_comissao           = obs
+                    linha.em_erro                = False
                 ids_processados.add(id_pedido)
                 log.info(
                     "    [OK-RETROATIVO] Pedido %s (%d linha(s)) -> %s",
@@ -1289,27 +1442,16 @@ def marcar_sem_simulador(pedidos: list[Pedido]) -> None:
 
     - Sem NF → "Pedido ainda nao faturado" (sem comissão)
     - Com NF, sem simulador:
-        * Vendedor sem comissão → "Sem comissao" (comissão 0)
         * Cliente com comissão fixa → usa o pct da planilha comissoes_fixas como
           estimativa (comissao_compras_pct já preenchida por _aplicar_comissoes_fixas).
           Quando o vendedor adicionar o simulador, calcular_comissoes comparará e
           escolherá o menor.
         * Demais clientes → 2% automático ("Fabricacao interna / simulador ausente")
     """
-    info_vend = carregar_vendedores()
     sem_nf = fab_interna = fab_fixa = 0
     for p in pedidos:
         if p.obs_comissao.strip():
             continue   # já classificado por calcular_comissoes
-
-        # Vendedor sem comissão tem prioridade sobre qualquer outra lógica
-        if not info_vend.tem_comissao(p.nome_vendedor):
-            p.comissao_menor_pct    = 0.0
-            p.valor_comissao_menor  = 0.0
-            p.comissao_compras_pct  = 0.0
-            p.comissao_vendedor_pct = 0.0
-            p.obs_comissao          = "Sem comissao"
-            continue
 
         tem_nf = p.nota_fiscal not in ("-", "", None)
 
@@ -1317,19 +1459,12 @@ def marcar_sem_simulador(pedidos: list[Pedido]) -> None:
             p.obs_comissao = "Pedido ainda nao faturado"
             sem_nf += 1
         elif p.comissao_fixa:
-            # Estimativa com comissão fixa — compras já definida, aguarda simulador.
-            # Se o vendedor não tem comissão, ignora o fixo e marca como sem comissão.
-            if not info_vend.tem_comissao(p.nome_vendedor):
-                p.comissao_menor_pct   = 0.0
-                p.valor_comissao_menor = 0.0
-                p.obs_comissao         = "Sem comissao"
-                sem_nf += 0  # não conta em nenhum bucket — só garante obs definida
-            else:
-                pct = p.comissao_compras_pct
-                p.comissao_menor_pct   = pct
-                p.valor_comissao_menor = round(p.valor_faturado * pct, 2)
-                p.obs_comissao         = "Fabricacao interna / simulador ausente"
-                fab_fixa += 1
+            # Estimativa com comissão fixa — compras já definida, aguarda simulador
+            pct = p.comissao_compras_pct
+            p.comissao_menor_pct   = pct
+            p.valor_comissao_menor = round(p.valor_faturado * pct, 2)
+            p.obs_comissao         = "Fabricacao interna / simulador ausente"
+            fab_fixa += 1
         else:
             # Sem comissão fixa: aplica 2% como estimativa padrão
             p.comissao_menor_pct   = _PCT_FABRICACAO_INTERNA
