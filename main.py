@@ -85,16 +85,15 @@ def main() -> None:
 
     # ── Passo 6: Publicação JSON → GitHub ────────────────
     log.info("══ PASSO 6: publicação dashboard ══")
-    # payload = exporter.gerar_json(df_coord)
-    # exporter.salvar_json_local(payload)   # salva cópia local como fallback
-    # github_publisher.publicar(payload)    # commit no repositório privado
+    payload = exporter.gerar_json(df_coord)
+    exporter.salvar_json_local(payload)   # salva cópia local como fallback
+    github_publisher.publicar(payload)    # commit no repositório privado
 
     duracao = (datetime.now() - inicio).total_seconds()
     log.info("════════════════════════════════════════════════")
     log.info("  ✅ Concluído em %.1fs", duracao)
     log.info("  📄 Log: %s", config.LOG_FILE.resolve())
     log.info("════════════════════════════════════════════════")
-
 
 if __name__ == "__main__":
     main()

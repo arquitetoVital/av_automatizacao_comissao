@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 # "Comissao_Vendedor_%" exibe como "Comissao Simulador"
 # "Menor_Comissao_%"   exibe como "Comissao Real"
 _RENOMEAR_HEADER: dict[str, str] = {
-    "Margem_%":            "Margem",
+    "Margem_%":            "Margem Simulador",
     "Comissao_Vendedor_%": "Comissao Simulador",
     "Comissao_Compras_%":  "Comissao Compras",
     "Menor_Comissao_%":    "Comissao Real",
