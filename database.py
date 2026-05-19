@@ -24,6 +24,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import config
 from models import Pedido
 
 log = logging.getLogger(__name__)
@@ -32,12 +33,22 @@ DB_PATH          = Path(__file__).parent / "comissoes.db"
 TTL_VENDEDORES_H = 24      # horas — vendedores mudam ocasionalmente
 TTL_EMPRESAS_D   = 7       # dias  — empresas mudam raramente
 
+# Conexão persistente usada somente em MODO_TESTE (banco :memory: por conexão)
+_conn_teste: sqlite3.Connection | None = None
+
 
 # ═══════════════════════════════════════════════════════
 #  CONEXÃO E SCHEMA
 # ═══════════════════════════════════════════════════════
 
 def _conectar() -> sqlite3.Connection:
+    global _conn_teste
+    if config.MODO_TESTE:
+        if _conn_teste is None:
+            _conn_teste = sqlite3.connect(":memory:")
+            _conn_teste.row_factory = sqlite3.Row
+            _conn_teste.execute("PRAGMA foreign_keys=ON")
+        return _conn_teste
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")   # leituras não bloqueiam escritas
@@ -47,7 +58,10 @@ def _conectar() -> sqlite3.Connection:
 
 def inicializar() -> None:
     """Cria as tabelas se não existirem e aplica migrations necessárias."""
-    log.info("  DB → inicializando %s", DB_PATH)
+    if config.MODO_TESTE:
+        log.warning("  DB → MODO_TESTE ativo: banco em memória — nada será persistido no disco.")
+    else:
+        log.info("  DB → inicializando %s", DB_PATH)
     with _conectar() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS pedidos (

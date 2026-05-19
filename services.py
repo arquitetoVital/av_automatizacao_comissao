@@ -1470,11 +1470,20 @@ def marcar_sem_simulador(pedidos: list[Pedido]) -> None:
 
 # ═══ BLOQUEIO DE NFS ═══════════════════════════════════
 
+def _nf_para_chave(nf: str) -> str:
+    """Remove zeros à esquerda convertendo para int — '00045678' e '45678' viram '45678'."""
+    try:
+        return str(int(nf.strip()))
+    except (ValueError, AttributeError):
+        return nf.strip()
+
+
 def carregar_nfs_bloqueadas() -> dict[str, str]:
     """
     Lê ANALISE_SIMULADOR.xlsx e retorna {nf: motivo_bloqueio}.
     Colunas esperadas: A = "NF bloqueada" | B = "Motivo do Bloqueio"
     Caminho configurado em config.ANALISE_SIMULADOR_PATH (via .env).
+    Chaves são normalizadas sem zeros à esquerda para comparação com NFs do Omie.
     """
     caminho = config.ANALISE_SIMULADOR_PATH
     if not caminho.exists():
@@ -1492,7 +1501,7 @@ def carregar_nfs_bloqueadas() -> dict[str, str]:
                 continue
             if not row or row[0] is None:
                 continue
-            nf     = str(row[0]).strip()
+            nf     = _nf_para_chave(str(row[0]))
             motivo = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ""
             if nf:
                 bloqueadas[nf] = motivo
@@ -1522,8 +1531,9 @@ def aplicar_bloqueios_nf(pedidos: list[Pedido]) -> int:
             continue
         motivo = ""
         for nf in p.nota_fiscal.split(" / "):
-            if nf.strip() in bloqueadas:
-                motivo = bloqueadas[nf.strip()]
+            chave = _nf_para_chave(nf)
+            if chave in bloqueadas:
+                motivo = bloqueadas[chave]
                 break
         if not motivo:
             continue
