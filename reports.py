@@ -34,35 +34,41 @@ log = logging.getLogger(__name__)
 # "Comissao_Vendedor_%" exibe como "Comissao Simulador"
 # "Menor_Comissao_%"   exibe como "Comissao Real"
 _RENOMEAR_HEADER: dict[str, str] = {
-    "Margem_%":            "Margem Simulador",
-    "Comissao_Vendedor_%": "Comissao Simulador",
-    "Comissao_Compras_%":  "Comissao Compras",
-    "Menor_Comissao_%":    "Comissao Real",
-    "Comissao_Definida_%": "Comissao Real",
+    "Margem_%":                   "Margem Sim. Vendedor",
+    "Comissao_Vendedor_%":        "Comissao Simulador",
+    "Valor_Comissao_Estimada":    "Comissao Estimada",
+    "Comissao_Compras_%":         "Comissao Compras",
+    "Menor_Comissao_%":           "Comissao Real",
+    "Comissao_Definida_%":        "Comissao Real",
+    "Motivo_Bloqueio":            "Motivo do Bloqueio",
 }
 
 COLUNAS_COORD = [
-    "Data_Venda", "Numero_Pedido", "Nome_Cliente", "Nome_Vendedor",
-    "Valor_Pedido", "Data_Nota_Fiscal", "Nota_Fiscal",
-    "Valor_Faturado", "Valor_Pendente",
-    "Margem_%",
-    "Comissao_Vendedor_%", "Comissao_Compras_%", "Menor_Comissao_%",
-    "Valor_Comissao_Calculado",
-    "Obs_Comissao",
+    "Data_Venda", "Numero_Pedido", "Nome_Cliente", "Nome_Vendedor",   # A-D
+    "Valor_Pedido", "Data_Nota_Fiscal", "Nota_Fiscal",                # E-G
+    "Valor_Faturado", "Valor_Pendente",                               # H-I
+    "Margem_%",                                                        # J
+    "Comissao_Vendedor_%", "Valor_Comissao_Estimada",                 # K-L  ← nova L
+    "Comissao_Compras_%", "Menor_Comissao_%",                         # M-N
+    "Valor_Comissao_Calculado",                                        # O
+    "Obs_Comissao",                                                    # P
+    "Motivo_Bloqueio",                                                 # Q  ← nova
 ]
-LARGURAS_COORD = [14, 16, 32, 28, 14, 18, 14, 15, 15, 12, 22, 18, 16, 22, 40]
+LARGURAS_COORD = [14, 16, 32, 28, 14, 18, 14, 15, 15, 12, 22, 22, 18, 16, 22, 40, 40]
 
 COLUNAS_VENDOR = [
-    "Data_Venda", "Numero_Pedido", "Nome_Cliente", "Nome_Vendedor",
-    "Valor_Pedido", "Data_Nota_Fiscal", "Nota_Fiscal",
-    "Valor_Faturado", "Valor_Pendente",
-    "Margem_%",
-    "Comissao_Definida_%", "Valor_Comissao_Calculado",
-    "Obs_Comissao",
+    "Data_Venda", "Numero_Pedido", "Nome_Cliente", "Nome_Vendedor",   # A-D
+    "Valor_Pedido", "Data_Nota_Fiscal", "Nota_Fiscal",                # E-G
+    "Valor_Faturado", "Valor_Pendente",                               # H-I
+    "Margem_%",                                                        # J
+    "Comissao_Definida_%", "Valor_Comissao_Estimada",                 # K-L  ← nova L
+    "Valor_Comissao_Calculado",                                        # M
+    "Obs_Comissao",                                                    # N
+    "Motivo_Bloqueio",                                                 # O  ← nova
 ]
-LARGURAS_VENDOR = [14, 16, 32, 28, 14, 18, 14, 15, 15, 12, 18, 22, 40]
+LARGURAS_VENDOR = [14, 16, 32, 28, 14, 18, 14, 15, 15, 12, 18, 22, 22, 40, 40]
 
-COLUNAS_MOEDA = {"Valor_Pedido", "Valor_Faturado", "Valor_Pendente", "Valor_Comissao_Calculado"}
+COLUNAS_MOEDA = {"Valor_Pedido", "Valor_Faturado", "Valor_Pendente", "Valor_Comissao_Calculado", "Valor_Comissao_Estimada"}
 COLUNAS_PCT   = {"Margem_%", "Comissao_Vendedor_%", "Comissao_Compras_%", "Menor_Comissao_%", "Comissao_Definida_%"}
 
 COR_HEADER       = "1F4E79"
@@ -128,6 +134,29 @@ def _escrever_excel(df: pd.DataFrame, caminho: Path, colunas: list, larguras: li
     # Garante que _em_erro está presente mas não inclui como coluna visível
     em_erro_col = "_em_erro"
     tem_em_erro = em_erro_col in df.columns
+
+    # ── Colunas calculadas / garantidas ──────────────────────────────────────
+    # Trabalha numa cópia para não modificar o DataFrame do chamador.
+    df = df.copy()
+
+    # Valor_Comissao_Estimada = Valor_Faturado × Comissao_Vendedor_%
+    # Usa Comissao_Definida_% como fallback para o relatório do vendedor,
+    # onde Comissao_Vendedor_% não existe.
+    if "Valor_Comissao_Estimada" not in df.columns:
+        pct_col = (
+            "Comissao_Vendedor_%" if "Comissao_Vendedor_%" in df.columns
+            else "Comissao_Definida_%"
+        )
+        if pct_col in df.columns and "Valor_Faturado" in df.columns:
+            df["Valor_Comissao_Estimada"] = (
+                df["Valor_Faturado"] * df[pct_col]
+            ).round(2)
+        else:
+            df["Valor_Comissao_Estimada"] = 0.0
+
+    # Motivo_Bloqueio: coluna reservada para uso futuro — vazia por ora
+    if "Motivo_Bloqueio" not in df.columns:
+        df["Motivo_Bloqueio"] = ""
 
     df_out = df[colunas].copy()
 
