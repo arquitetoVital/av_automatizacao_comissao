@@ -20,29 +20,17 @@ Uso:
 """
 
 import logging
-import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import openpyxl
 
+from utils import nome_para_pasta, normalizar_str
+
 log = logging.getLogger(__name__)
 
 _XLSX = Path(__file__).parent / "vendedores.xlsx"
 
-
-# ── Normalização ──────────────────────────────────────────────────────────────
-
-def _norm(s: str) -> str:
-    """Remove acentos, maiúsculo e strip."""
-    s = unicodedata.normalize("NFD", str(s))
-    return "".join(c for c in s if unicodedata.category(c) != "Mn").upper().strip()
-
-
-def _nome_para_pasta(nome: str) -> str:
-    """'HUGO DOS SANTOS' → 'HUGO_DOS_SANTOS'"""
-    limpo = "".join(c for c in str(nome) if c not in r'\/:*?"<>|').strip()
-    return limpo.replace(" ", "_")
 
 
 # ── Estrutura de dados ────────────────────────────────────────────────────────
@@ -66,7 +54,7 @@ class InfoVendedores:
     _ajuda_custo: dict[str, float]     = field(default_factory=dict)
 
     def _chave(self, nome_vendedor: str) -> str:
-        return _nome_para_pasta(nome_vendedor).upper()
+        return nome_para_pasta(nome_vendedor).upper()
 
     # ── Consultas públicas ────────────────────────────────────────────────────
 
@@ -84,7 +72,7 @@ class InfoVendedores:
 
     def cliente_bloqueado(self, nome_cliente: str) -> bool:
         """Retorna True se algum termo da blacklist é substring do nome do cliente."""
-        nome_norm = _norm(nome_cliente)
+        nome_norm = normalizar_str(nome_cliente)
         return any(termo in nome_norm for termo in self._bl_clientes)
 
     # ── Listas para uso no reports.py ────────────────────────────────────────
@@ -136,12 +124,12 @@ def carregar_vendedores() -> InfoVendedores:
             nome, filial, comissao, ajuda = (row + (None, None, None, None))[:4]
             if not nome:
                 continue
-            chave  = _nome_para_pasta(str(nome)).upper()
+            chave  = nome_para_pasta(str(nome)).upper()
             filial = str(filial or "").strip().upper()
             if filial in ("SP", "MG"):
                 info._filiais[chave] = filial
                 total += 1
-            com = _norm(str(comissao or "SIM"))
+            com = normalizar_str(str(comissao or "SIM"))
             if com in ("NAO", "NÃO", "N", "NO", "FALSE", "0"):
                 info._sem_comissao.add(chave)
                 sem_com += 1
@@ -180,7 +168,7 @@ def carregar_vendedores() -> InfoVendedores:
         for row in ws.iter_rows(min_row=2, values_only=True):
             termo = row[0]
             if termo:
-                info._bl_clientes.append(_norm(str(termo)))
+                info._bl_clientes.append(normalizar_str(str(termo)))
         log.info("  BLACKLIST_CLIENTES: %d termo(s).", len(info._bl_clientes))
     else:
         log.warning("  Aba BLACKLIST_CLIENTES nao encontrada.")

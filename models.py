@@ -54,6 +54,14 @@ class Pedido:
     # Esses pedidos aparecem no relatório com comissão 0 e obs "Refaturamento".
     refaturamento: bool = False
 
+    # True quando os valores de margem e comissão do vendedor já foram fixados
+    # no banco a partir da primeira leitura do simulador — nunca mais sobrescritos.
+    simulador_fixado: bool = False
+
+    # Motivo de bloqueio proveniente de ANALISE_SIMULADOR.xlsx; só aparece no
+    # relatório do coordenador.
+    motivo_bloqueio: str = ""
+
     def to_dict(self) -> dict:
         """Converte para dicionário com os nomes de coluna usados no Excel/API."""
         return {
@@ -72,6 +80,7 @@ class Pedido:
             "Menor_Comissao_%":         self.comissao_menor_pct,
             "Valor_Comissao_Calculado": self.valor_comissao_menor,
             "Obs_Comissao":             self.obs_comissao,
+            "Motivo_Bloqueio":          self.motivo_bloqueio,
         }
 
 

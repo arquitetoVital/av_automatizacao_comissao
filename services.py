@@ -1,4 +1,3 @@
-import os
 """
 services.py
 ───────────
@@ -13,6 +12,7 @@ Melhorias implementadas:
 """
 
 import logging
+import os
 import re
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -29,7 +29,7 @@ import config
 import database
 from clients import OmieClient
 from models import InfoCusto, Pedido
-from utils import nome_para_pasta
+from utils import nome_para_pasta, normalizar_str
 from vendedores import carregar_vendedores
 
 log = logging.getLogger(__name__)
@@ -39,13 +39,6 @@ _EXT_SIMULADOR = {'.xlsx', '.xlsm'}
 
 
 # ═══ UTILITÁRIOS DE DATA ═══════════════════════════════
-
-def _norm(s: str) -> str:
-    """Remove acentos, coloca maiúsculo e strip — usado para comparar nomes."""
-    import unicodedata as _ud
-    s = _ud.normalize("NFD", str(s))
-    return "".join(c for c in s if _ud.category(c) != "Mn").upper().strip()
-
 
 def _normalizar_data(valor) -> str:
     if valor is None or str(valor).strip() in ("", "-"):
@@ -152,7 +145,7 @@ def carregar_comissoes_fixas() -> dict[str, float]:
             if margem_min is not None:
                 entrada["margem_minima"] = margem_min
 
-            fixas[_norm(nome_raw)] = entrada
+            fixas[normalizar_str(nome_raw)] = entrada
         wb.close()
     except Exception as exc:
         log.error("  [COMISSAO-FIXA] Erro ao ler '%s': %s", caminho, exc)
@@ -178,7 +171,7 @@ def _aplicar_comissoes_fixas(
         return
     aplicados = 0
     for p in pedidos:
-        chave_cliente = _norm(p.nome_cliente)
+        chave_cliente = normalizar_str(p.nome_cliente)
         entrada = fixas.get(chave_cliente)
         if entrada is None:
             for chave_fixa, val in fixas.items():
@@ -594,24 +587,6 @@ def _meses_anteriores_compras(filial: str) -> list[Path]:
     return [p for _, _, p in pastas[:_MAX_MESES_RETROATIVOS]]
 
 
-def _buscar_simulador_retroativo(nome_arq: str, filial: str) -> Path | None:
-    """
-    Procura `nome_arq` retroativamente nas pastas de compras de meses anteriores
-    (raiz, OK e ERRO de cada mês), do mais recente para o mais antigo.
-
-    Retorna o Path do primeiro encontrado, ou None.
-    """
-    for pasta_mes_filial in _meses_anteriores_compras(filial):
-        for subpasta in (pasta_mes_filial, pasta_mes_filial / "OK", pasta_mes_filial / "ERRO"):
-            candidato = subpasta / nome_arq
-            if candidato.exists():
-                log.debug(
-                    "    [RETROATIVO] Encontrado '%s' em '%s'", nome_arq, subpasta
-                )
-                return candidato
-    return None
-
-
 def _ids_ja_tratados_comprador(filial: str) -> set[str]:
     """
     Retorna o conjunto de IDs de pedido que já foram tratados pelo comprador
@@ -980,16 +955,6 @@ def _descobrir_simuladores_comprador() -> dict[str, Path]:
             **_descobrir_simuladores_comprador_filial("MG")}
 
 
-def _nome_base(nome_arq: str) -> str:
-    p    = Path(nome_arq)
-    stem = p.stem
-    for sufixo in (" OK", "_OK"):
-        if stem.upper().endswith(sufixo.upper()):
-            stem = stem[: -len(sufixo)]
-            break
-    return stem + p.suffix
-
-
 # ═══ MELHORIA #4/#5 — MAPEAMENTO DE SITUACAO POR PEDIDO
 
 def _mapear_situacao_simuladores(filial: str) -> dict[str, LocalizacaoSimulador]:
@@ -1023,6 +988,29 @@ def _mapear_situacao_simuladores(filial: str) -> dict[str, LocalizacaoSimulador]
 
 # ═══ CALCULO DE COMISSOES ══════════════════════════════
 
+def _resolver_teto_fixa(
+    linhas_pedido: list,
+    margem: float | None,
+) -> tuple[float | None, bool]:
+    """
+    Retorna (teto_fixa, condicional_ativa) para pedidos com comissão fixa.
+    teto_fixa = None se o pedido não tem comissão fixa.
+    condicional_ativa = True se margem >= margem_minima e existe percentual condicional.
+    """
+    if not any(getattr(l, "comissao_fixa", False) for l in linhas_pedido):
+        return None, False
+    pct_cond   = getattr(linhas_pedido[0], "_pct_condicional", None)
+    margem_min = getattr(linhas_pedido[0], "_margem_minima",   None)
+    pct_padrao = linhas_pedido[0].comissao_compras_pct
+    condicional = (
+        pct_cond is not None
+        and margem_min is not None
+        and margem is not None
+        and margem >= margem_min
+    )
+    return (pct_cond if condicional else pct_padrao), condicional
+
+
 def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
     log.info("═══ Calculando comissoes ═══")
     info_vend = carregar_vendedores()
@@ -1049,6 +1037,18 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
         chave = p.numero_pedido.strip().zfill(6)
         idx.setdefault(chave, []).append(p)
 
+    # Melhoria Fixação: carrega valores de vendedor já fixados no banco e
+    # pré-popula os objetos Pedido. Assim, mesmo que o arquivo do vendedor
+    # não esteja mais presente, o relatório exibirá os valores originais.
+    estado_fixado = database.carregar_estado_simuladores(config.ANO_MES_REF)
+    for chave, linhas in idx.items():
+        est = estado_fixado.get(chave)
+        if est and est["fixado"]:
+            for p in linhas:
+                p.comissao_vendedor_pct = est["pct_v"]
+                p.margem_simulador      = est["margem"]
+                p.simulador_fixado      = True
+
     sims_sp = _descobrir_simuladores(config.PASTA_VENDEDOR_SP, info_vend)
     sims_mg = _descobrir_simuladores(config.PASTA_VENDEDOR_MG, info_vend)
     sims_vendor = {**sims_sp, **sims_mg}
@@ -1074,23 +1074,23 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
         if id_p
     }
     ids_todos_pedidos = set(idx.keys())
-    ids_faltando_sp   = ids_todos_pedidos - ids_com_simulador
-    ids_faltando_mg   = ids_todos_pedidos - ids_com_simulador
+    ids_faltando      = ids_todos_pedidos - ids_com_simulador
 
     # Busca retroativa: SP
     sims_retro_sp = _buscar_simuladores_retroativos(
-        ids_nao_encontrados=ids_faltando_sp,
+        ids_nao_encontrados=ids_faltando,
         filial="SP",
         pasta_vendedor=config.PASTA_VENDEDOR_SP,
     )
     # Busca retroativa: MG (sobre os que ainda faltam após SP)
+    ids_encontrados_sp = {
+        id_p
+        for nome in sims_retro_sp
+        for id_p in [_extrair_id_pedido(Path(_nome_base(nome)).stem)]
+        if id_p
+    }
     sims_retro_mg = _buscar_simuladores_retroativos(
-        ids_nao_encontrados=ids_faltando_mg - {
-            id_p
-            for nome in sims_retro_sp
-            for id_p in [_extrair_id_pedido(Path(_nome_base(nome)).stem)]
-            if id_p
-        },
+        ids_nao_encontrados=ids_faltando - ids_encontrados_sp,
         filial="MG",
         pasta_vendedor=config.PASTA_VENDEDOR_MG,
     )
@@ -1149,48 +1149,48 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
 
             info_vendor = infos_vendor.get(nome_arq)
             if info_vendor is None:
-                # Simulador do vendedor não foi lido (arquivo corrompido, senha, etc.).
-                # Tenta processar pelo simulador do comprador /OK neste momento,
-                # com o teto de fixas aplicado — para não cair no loop retroativo
-                # sem teto.
+                # Arquivo do vendedor ilegível (corrompido, senha, etc.).
+                # Tenta processar pelo simulador do comprador /OK.
                 nome_comprador_fallback = idx_comprador.get(_nome_base(nome_arq))
                 info_ok_fallback = (
                     infos_comprador.get(nome_comprador_fallback.name)
                     if nome_comprador_fallback else None
                 )
                 if info_ok_fallback is not None:
-                    letra_fb  = str(info_ok_fallback.letra_com or "").strip().upper()
-                    prej_fb   = _is_prejuizo(info_ok_fallback.status)
-                    pct_c_fb  = 0.0 if prej_fb else config.TABELA_COMISSAO.get(letra_fb, 0.0)
-                    tem_fixa_fb = any(getattr(l, "comissao_fixa", False) for l in linhas_pedido)
-                    if tem_fixa_fb and not prej_fb:
-                        pct_cond_fb  = getattr(linhas_pedido[0], "_pct_condicional", None)
-                        margem_min_fb = getattr(linhas_pedido[0], "_margem_minima",  None)
-                        pct_pad_fb   = linhas_pedido[0].comissao_compras_pct
-                        margem_fb    = info_ok_fallback.margem
-                        cond_fb = (
-                            pct_cond_fb is not None
-                            and margem_min_fb is not None
-                            and margem_fb is not None
-                            and margem_fb >= margem_min_fb
-                        )
-                        teto_fb   = pct_cond_fb if cond_fb else pct_pad_fb
-                        pct_men_fb = min(pct_c_fb, teto_fb)
+                    letra_fb = str(info_ok_fallback.letra_com or "").strip().upper()
+                    prej_fb  = _is_prejuizo(info_ok_fallback.status)
+                    pct_c_fb = 0.0 if prej_fb else config.TABELA_COMISSAO.get(letra_fb, 0.0)
+
+                    # Usa valores do vendedor fixados se disponíveis
+                    if linhas_pedido[0].simulador_fixado:
+                        pct_v_fb  = linhas_pedido[0].comissao_vendedor_pct
+                        margem_fb = linhas_pedido[0].margem_simulador
                     else:
-                        pct_men_fb = 0.0 if prej_fb else pct_c_fb
+                        pct_v_fb  = pct_c_fb
+                        margem_fb = info_ok_fallback.margem or 0.0
+
+                    teto_fb, _ = _resolver_teto_fixa(linhas_pedido, margem_fb)
+                    if prej_fb:
+                        pct_men_fb = 0.0
+                    elif teto_fb is not None:
+                        pct_men_fb = min(pct_v_fb, pct_c_fb, teto_fb)
+                    else:
+                        pct_men_fb = min(pct_v_fb, pct_c_fb)
+
                     obs_fb = "Comissao Definida! - Prejuizo" if prej_fb else "Comissao Definida!"
                     if not info_vend.tem_comissao(linhas_pedido[0].nome_vendedor):
-                        pct_c_fb = pct_men_fb = 0.0
+                        pct_v_fb = pct_c_fb = pct_men_fb = 0.0
                         obs_fb = "Sem comissao"
                     for linha in linhas_pedido:
-                        linha.comissao_vendedor_pct  = pct_c_fb
+                        linha.comissao_vendedor_pct  = pct_v_fb
                         linha.comissao_compras_pct   = pct_c_fb
                         linha.comissao_menor_pct     = pct_men_fb
                         linha.valor_comissao_menor   = round(linha.valor_faturado * pct_men_fb, 2)
-                        linha.margem_simulador       = info_ok_fallback.margem or 0.0
+                        linha.margem_simulador       = margem_fb
                         linha.estimativa_condicional = False
                         linha.obs_comissao           = obs_fb
                         linha.em_erro                = False
+                        # simulador_fixado: já pré-populado, não alterar
                     ids_processados.add(id_pedido)
                     log.info(
                         "    [FALLBACK-OK] Pedido %s: vendor ilegível, processado via /OK com teto.",
@@ -1200,9 +1200,14 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
                     total_skip += 1
                 continue
 
-            letra_v        = str(info_vendor.letra_com or "").strip().upper()
-            pct_v          = 0.0 if _is_prejuizo(info_vendor.status) else config.TABELA_COMISSAO.get(letra_v, 0.0)
-            margem_vendor  = info_vendor.margem  # float | None — lida de AC8
+            letra_v = str(info_vendor.letra_com or "").strip().upper()
+            if linhas_pedido[0].simulador_fixado:
+                # Valores do vendedor já fixados na primeira leitura — preserva originais
+                pct_v         = linhas_pedido[0].comissao_vendedor_pct
+                margem_vendor = linhas_pedido[0].margem_simulador
+            else:
+                pct_v         = 0.0 if _is_prejuizo(info_vendor.status) else config.TABELA_COMISSAO.get(letra_v, 0.0)
+                margem_vendor = info_vendor.margem  # float | None — lida de AC8
 
             nome_comprador    = idx_comprador.get(_nome_base(nome_arq))
             info_comprador    = infos_comprador.get(nome_comprador.name) if nome_comprador else None
@@ -1211,23 +1216,9 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
             loc_coord = situacao_coord.get(id_pedido)
             sit = loc_coord.situacao if loc_coord else "nao_existe"
 
-            # ── Dados de comissão fixa para este pedido ──────────────────────────
-            tem_fixa     = any(getattr(l, "comissao_fixa", False) for l in linhas_pedido)
-            pct_cond     = getattr(linhas_pedido[0], "_pct_condicional", None) if tem_fixa else None
-            margem_min   = getattr(linhas_pedido[0], "_margem_minima",   None) if tem_fixa else None
-            pct_padrao   = linhas_pedido[0].comissao_compras_pct          if tem_fixa else None
-
-            # Teto efetivo:
-            #   - condicional entra se margem do simulador >= margem_minima
-            #   - mesmo com condicional ativa, ainda é um TETO (compete com compras)
-            #   - se condicional não existe ou margem não atingida → usa pct_padrao
-            condicional_ativa = (
-                pct_cond is not None
-                and margem_min is not None
-                and margem_vendor is not None
-                and margem_vendor >= margem_min
-            )
-            teto_fixa = pct_cond if condicional_ativa else pct_padrao   # None se sem fixa
+            # ── Teto de comissão fixa para este pedido ────────────────────────────
+            teto_fixa, condicional_ativa = _resolver_teto_fixa(linhas_pedido, margem_vendor)
+            tem_fixa = teto_fixa is not None
 
             # ── Cálculo principal ─────────────────────────────────────────────────
             #
@@ -1303,6 +1294,7 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
                 linha.comissao_menor_pct       = pct_menor
                 linha.valor_comissao_menor     = round(linha.valor_faturado * pct_menor, 2)
                 linha.margem_simulador         = margem_vendor if margem_vendor is not None else 0.0
+                linha.simulador_fixado         = True  # fixa na primeira leitura do vendor sim
                 linha.estimativa_condicional   = estimativa_condicional
                 linha.obs_comissao             = obs
                 linha.em_erro                  = em_erro
@@ -1347,32 +1339,25 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
                 prejuizo = _is_prejuizo(info_ok.status)
                 pct_c    = 0.0 if prejuizo else config.TABELA_COMISSAO.get(letra_c, 0.0)
 
-                # Sem simulador do vendedor disponível neste loop: usa pct_c como estimativa
-                # de pct_v também — e a margem do comprador como referência.
-                pct_v_retro  = pct_c
-                margem_retro = info_ok.margem  # AC8 do simulador do comprador
-
-                # Aplica teto de comissão fixa se o cliente estiver na planilha
-                tem_fixa_retro = any(getattr(l, "comissao_fixa", False) for l in linhas_pedido)
-                if tem_fixa_retro and not prejuizo:
-                    pct_cond_r  = getattr(linhas_pedido[0], "_pct_condicional", None)
-                    margem_min_r = getattr(linhas_pedido[0], "_margem_minima",  None)
-                    pct_pad_r   = linhas_pedido[0].comissao_compras_pct
-
-                    cond_ativa_r = (
-                        pct_cond_r  is not None
-                        and margem_min_r is not None
-                        and margem_retro is not None
-                        and margem_retro >= margem_min_r
-                    )
-                    teto_r   = pct_cond_r if cond_ativa_r else pct_pad_r
-                    pct_menor = min(pct_c, teto_r)
+                # Usa valores do vendedor fixados se disponíveis; senão estima via pct_c
+                margem_ok = info_ok.margem
+                if linhas_pedido[0].simulador_fixado:
+                    pct_v_retro  = linhas_pedido[0].comissao_vendedor_pct
+                    margem_retro = linhas_pedido[0].margem_simulador
                 else:
-                    pct_menor = 0.0 if prejuizo else pct_c
+                    pct_v_retro  = pct_c
+                    margem_retro = margem_ok
+
+                teto_r, _ = _resolver_teto_fixa(linhas_pedido, margem_retro)
+                if prejuizo:
+                    pct_menor = 0.0
+                elif teto_r is not None:
+                    pct_menor = min(pct_v_retro, pct_c, teto_r)
+                else:
+                    pct_menor = min(pct_v_retro, pct_c)
 
                 obs = "Comissao Definida! - Prejuizo" if prejuizo else "Comissao Definida!"
 
-                # Vendedor sem comissão: zera mesmo com OK do comprador
                 if not info_vend.tem_comissao(linhas_pedido[0].nome_vendedor):
                     pct_v_retro = pct_c = pct_menor = 0.0
                     obs = "Sem comissao"
@@ -1386,6 +1371,7 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
                     linha.estimativa_condicional = False
                     linha.obs_comissao           = obs
                     linha.em_erro                = False
+                    # simulador_fixado: já pré-populado, não alterar
                 ids_processados.add(id_pedido)
                 log.info(
                     "    [OK-RETROATIVO] Pedido %s (%d linha(s)) -> %s",
@@ -1480,6 +1466,79 @@ def marcar_sem_simulador(pedidos: list[Pedido]) -> None:
         log.info("  %d pedido(s) sem simulador (comissao 2%% aplicada).", fab_interna)
     if not sem_nf and not fab_fixa and not fab_interna:
         log.info("  Todos os pedidos com obs definida.")
+
+
+# ═══ BLOQUEIO DE NFS ═══════════════════════════════════
+
+def carregar_nfs_bloqueadas() -> dict[str, str]:
+    """
+    Lê ANALISE_SIMULADOR.xlsx e retorna {nf: motivo_bloqueio}.
+    Colunas esperadas: A = "NF bloqueada" | B = "Motivo do Bloqueio"
+    Caminho configurado em config.ANALISE_SIMULADOR_PATH (via .env).
+    """
+    caminho = config.ANALISE_SIMULADOR_PATH
+    if not caminho.exists():
+        log.debug("  ANALISE_SIMULADOR não encontrado em '%s' — sem bloqueios.", caminho)
+        return {}
+
+    bloqueadas: dict[str, str] = {}
+    try:
+        wb = openpyxl.load_workbook(caminho, read_only=True, data_only=True)
+        ws = wb.active
+        cabecalho_pulado = False
+        for row in ws.iter_rows(values_only=True):
+            if not cabecalho_pulado:
+                cabecalho_pulado = True
+                continue
+            if not row or row[0] is None:
+                continue
+            nf     = str(row[0]).strip()
+            motivo = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ""
+            if nf:
+                bloqueadas[nf] = motivo
+        wb.close()
+    except Exception as exc:
+        log.error("  [ANALISE_SIMULADOR] Erro ao ler '%s': %s", caminho, exc)
+        return {}
+
+    if bloqueadas:
+        log.info("  ANALISE_SIMULADOR: %d NF(s) bloqueada(s).", len(bloqueadas))
+    return bloqueadas
+
+
+def aplicar_bloqueios_nf(pedidos: list[Pedido]) -> int:
+    """
+    Zera a comissão de pedidos cuja NF consta em ANALISE_SIMULADOR.xlsx e preenche
+    motivo_bloqueio (exibido apenas no relatório do coordenador).
+    Retorna o número de pedidos afetados.
+    """
+    bloqueadas = carregar_nfs_bloqueadas()
+    if not bloqueadas:
+        return 0
+
+    bloqueados = 0
+    for p in pedidos:
+        if p.nota_fiscal in ("-", "", None):
+            continue
+        motivo = ""
+        for nf in p.nota_fiscal.split(" / "):
+            if nf.strip() in bloqueadas:
+                motivo = bloqueadas[nf.strip()]
+                break
+        if not motivo:
+            continue
+        p.comissao_vendedor_pct = 0.0
+        p.comissao_compras_pct  = 0.0
+        p.comissao_menor_pct    = 0.0
+        p.valor_comissao_menor  = 0.0
+        p.motivo_bloqueio       = motivo
+        bloqueados += 1
+        log.info(
+            "  [BLOQUEIO] Pedido %s NF %s — %s",
+            p.numero_pedido, p.nota_fiscal, motivo or "(sem motivo informado)",
+        )
+
+    return bloqueados
 
 
 # ═══ CONVERSAO PARA DATAFRAME ══════════════════════════

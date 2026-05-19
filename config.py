@@ -107,6 +107,21 @@ PASTA_ANALISTA               = Path(os.getenv("PASTA_ANALISTA",             str(
 PASTA_ANALISTA_SIMULADORES   = Path(os.getenv("PASTA_ANALISTA_SIMULADORES", str(_BASE / "ANALISTA_VENDAS" / "SIMULADORES")))
 
 # ═══════════════════════════════════════════════════════
+#  PLANILHA DE BLOQUEIO DE NFs — ANALISE_SIMULADOR.xlsx
+#
+#  Preenchida pela analista com duas colunas:
+#    "NF bloqueada"     → número da NF a ser bloqueada
+#    "Motivo do Bloqueio" → texto exibido apenas no relatório do coordenador
+#
+#  Para alterar o caminho via variável de ambiente:
+#    ANALISE_SIMULADOR_PATH=Z:\CAMINHO\ANALISE_SIMULADOR.xlsx
+# ═══════════════════════════════════════════════════════
+ANALISE_SIMULADOR_PATH = Path(os.getenv(
+    "ANALISE_SIMULADOR_PATH",
+    str(_BASE / "ANALISE_SIMULADOR.xlsx"),
+))
+
+# ═══════════════════════════════════════════════════════
 #  REGRAS DE COMISSÃO
 # ═══════════════════════════════════════════════════════
 TABELA_COMISSAO: dict[str, float] = {

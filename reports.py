@@ -61,12 +61,11 @@ COLUNAS_VENDOR = [
     "Valor_Pedido", "Data_Nota_Fiscal", "Nota_Fiscal",                # E-G
     "Valor_Faturado", "Valor_Pendente",                               # H-I
     "Margem_%",                                                        # J
-    "Comissao_Definida_%", "Valor_Comissao_Estimada",                 # K-L  ← nova L
+    "Comissao_Definida_%", "Valor_Comissao_Estimada",                 # K-L
     "Valor_Comissao_Calculado",                                        # M
     "Obs_Comissao",                                                    # N
-    "Motivo_Bloqueio",                                                 # O  ← nova
 ]
-LARGURAS_VENDOR = [14, 16, 32, 28, 14, 18, 14, 15, 15, 12, 18, 22, 22, 40, 40]
+LARGURAS_VENDOR = [14, 16, 32, 28, 14, 18, 14, 15, 15, 12, 18, 22, 22, 40]
 
 COLUNAS_MOEDA = {"Valor_Pedido", "Valor_Faturado", "Valor_Pendente", "Valor_Comissao_Calculado", "Valor_Comissao_Estimada"}
 COLUNAS_PCT   = {"Margem_%", "Comissao_Vendedor_%", "Comissao_Compras_%", "Menor_Comissao_%", "Comissao_Definida_%"}
@@ -182,9 +181,6 @@ def _escrever_excel(df: pd.DataFrame, caminho: Path, colunas: list, larguras: li
             eh_erro   = (cor_fundo == COR_ERRO)   # vermelho = negrito + texto escuro
         elif eh_erro:
             cor_fundo = COR_ERRO
-        elif obs_val.startswith("Comissao Definida"):
-            # Verde alternado para linhas com comissão confirmada
-            cor_fundo = COR_LINHA_A if r_idx % 2 == 0 else COR_LINHA_B
         else:
             cor_fundo = COR_LINHA_A if r_idx % 2 == 0 else COR_LINHA_B
 

@@ -61,6 +61,8 @@ def inicializar() -> None:
                 nota_fiscal           TEXT,
                 valor_faturado        REAL,
                 valor_pendente        REAL,
+                margem_simulador      REAL    DEFAULT 0,
+                simulador_fixado      INTEGER DEFAULT 0,
                 comissao_vendedor_pct REAL    DEFAULT 0,
                 comissao_compras_pct  REAL    DEFAULT 0,
                 comissao_menor_pct    REAL    DEFAULT 0,
@@ -95,6 +97,17 @@ def inicializar() -> None:
                 log.info("  DB → coluna obsoleta removida: %s", col)
             except Exception:
                 pass  # coluna já não existe — ok
+
+        # Migrations: adiciona colunas novas a bancos existentes
+        for ddl in (
+            "ALTER TABLE pedidos ADD COLUMN margem_simulador REAL DEFAULT 0",
+            "ALTER TABLE pedidos ADD COLUMN simulador_fixado INTEGER DEFAULT 0",
+        ):
+            try:
+                conn.execute(ddl)
+                log.info("  DB → migração aplicada: %s", ddl)
+            except Exception:
+                pass  # coluna já existe
 
     log.info("  DB → schema OK.")
 
@@ -131,7 +144,7 @@ def upsert_pedidos(pedidos: list[Pedido], ano_mes: str) -> tuple[int, int, int]:
                         :data_venda, :nome_cliente, :nome_vendedor,
                         :valor_pedido, :data_nota_fiscal, :nota_fiscal,
                         :valor_faturado, :valor_pendente,
-                        0, 0, 0, 0, '', :atualizado_em
+                        0, 0, 0, 0, 0, 0, '', :atualizado_em
                     )
                 """, {**_pedido_para_row(p, ano_mes), "atualizado_em": agora})
                 inseridos += 1
@@ -170,19 +183,37 @@ def carregar_pedidos(ano_mes: str) -> list[Pedido]:
 
 
 def atualizar_comissoes(pedidos: list[Pedido], ano_mes: str) -> None:
+    """
+    Persiste as comissões calculadas.
+
+    Campos do vendedor (margem_simulador, comissao_vendedor_pct, simulador_fixado)
+    só são gravados quando o banco ainda não os fixou (simulador_fixado = 0).
+    Uma vez fixados, permanecem inalterados mesmo que o vendedor reenvie o simulador,
+    permitindo comparação no fim do mês entre o valor original do vendedor e o real.
+
+    Campos do comprador (comissao_compras_pct, comissao_menor_pct, valor_comissao_menor,
+    obs_comissao) são sempre atualizados.
+    """
     agora = datetime.now().isoformat(timespec="seconds")
     with _conectar() as conn:
         conn.executemany("""
             UPDATE pedidos SET
-                comissao_vendedor_pct=:cv_pct,
-                comissao_compras_pct=:cc_pct,
-                comissao_menor_pct=:cm_pct,
-                valor_comissao_menor=:cm_val,
-                obs_comissao=:obs,
-                atualizado_em=:agora
-            WHERE numero_pedido=:num AND ano_mes=:ano_mes
+                margem_simulador      = CASE WHEN simulador_fixado = 0 AND :fixar = 1
+                                             THEN :margem ELSE margem_simulador END,
+                comissao_vendedor_pct = CASE WHEN simulador_fixado = 0 AND :fixar = 1
+                                             THEN :cv_pct ELSE comissao_vendedor_pct END,
+                simulador_fixado      = CASE WHEN simulador_fixado = 0 AND :fixar = 1
+                                             THEN 1 ELSE simulador_fixado END,
+                comissao_compras_pct  = :cc_pct,
+                comissao_menor_pct    = :cm_pct,
+                valor_comissao_menor  = :cm_val,
+                obs_comissao          = :obs,
+                atualizado_em         = :agora
+            WHERE numero_pedido = :num AND ano_mes = :ano_mes
         """, [
             {
+                "margem":  p.margem_simulador,
+                "fixar":   1 if p.simulador_fixado else 0,
                 "cv_pct":  p.comissao_vendedor_pct,
                 "cc_pct":  p.comissao_compras_pct,
                 "cm_pct":  p.comissao_menor_pct,
@@ -195,6 +226,27 @@ def atualizar_comissoes(pedidos: list[Pedido], ano_mes: str) -> None:
             for p in pedidos
         ])
     log.info("  DB → comissões persistidas (%d pedidos).", len(pedidos))
+
+
+def carregar_estado_simuladores(ano_mes: str) -> dict[str, dict]:
+    """
+    Retorna {numero_pedido_zfill6: {fixado, margem, pct_v}} para todos os pedidos do mês.
+    Usado em calcular_comissoes para pré-popular e congelar os valores do vendedor.
+    """
+    with _conectar() as conn:
+        rows = conn.execute(
+            "SELECT numero_pedido, simulador_fixado, margem_simulador, comissao_vendedor_pct "
+            "FROM pedidos WHERE ano_mes = ?",
+            (ano_mes,),
+        ).fetchall()
+    return {
+        r["numero_pedido"].strip().zfill(6): {
+            "fixado": bool(r["simulador_fixado"]),
+            "margem": r["margem_simulador"] or 0.0,
+            "pct_v":  r["comissao_vendedor_pct"] or 0.0,
+        }
+        for r in rows
+    }
 
 
 def limpar_pedidos_sem_vendedor(ano_mes: str) -> None:
@@ -360,6 +412,8 @@ def _row_para_pedido(row: sqlite3.Row) -> Pedido:
         nota_fiscal           = row["nota_fiscal"]           or "-",
         valor_faturado        = row["valor_faturado"]        or 0.0,
         valor_pendente        = row["valor_pendente"]        or 0.0,
+        margem_simulador      = row["margem_simulador"]      or 0.0,
+        simulador_fixado      = bool(row["simulador_fixado"]),
         comissao_vendedor_pct = row["comissao_vendedor_pct"] or 0.0,
         comissao_compras_pct  = row["comissao_compras_pct"]  or 0.0,
         comissao_menor_pct    = row["comissao_menor_pct"]    or 0.0,

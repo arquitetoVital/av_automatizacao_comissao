@@ -70,6 +70,12 @@ def main() -> None:
     log.info("══ PASSO 3: marcação sem simulador ══")
     services.marcar_sem_simulador(pedidos)
 
+    # ── Passo 3b: Bloqueio de NFs — ANALISE_SIMULADOR.xlsx ──
+    log.info("══ PASSO 3b: bloqueio de NFs ══")
+    n_bloqueados = services.aplicar_bloqueios_nf(pedidos)
+    if n_bloqueados:
+        log.info("  %d pedido(s) com NF bloqueada (comissão zerada).", n_bloqueados)
+
     # df_coord → inclui fabricação interna (2%) — usado pelo coordenador e analista
     # df_vendor → fabricação interna ocultada — usado nos relatórios dos vendedores
     df_coord = services.pedidos_para_df(pedidos)
@@ -85,9 +91,9 @@ def main() -> None:
 
     # ── Passo 6: Publicação JSON → GitHub ────────────────
     log.info("══ PASSO 6: publicação dashboard ══")
-    payload = exporter.gerar_json(df_coord)
-    exporter.salvar_json_local(payload)   # salva cópia local como fallback
-    github_publisher.publicar(payload)    # commit no repositório privado
+    # payload = exporter.gerar_json(df_coord)
+    # exporter.salvar_json_local(payload)   # salva cópia local como fallback
+    # github_publisher.publicar(payload)    # commit no repositório privado
 
     duracao = (datetime.now() - inicio).total_seconds()
     log.info("════════════════════════════════════════════════")
