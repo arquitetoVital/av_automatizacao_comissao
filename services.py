@@ -1517,13 +1517,17 @@ def carregar_nfs_bloqueadas() -> dict[str, str]:
 
 def aplicar_bloqueios_nf(pedidos: list[Pedido]) -> int:
     """
-    Zera a comissão de pedidos cuja NF consta em ANALISE_SIMULADOR.xlsx e preenche
-    motivo_bloqueio (exibido apenas no relatório do coordenador).
+    Preenche motivo_bloqueio para pedidos cuja NF consta em ANALISE_SIMULADOR.xlsx.
+    Se config.BLOQUEIO_NF_ATIVO=True, também zera a comissão.
     Retorna o número de pedidos afetados.
     """
     bloqueadas = carregar_nfs_bloqueadas()
     if not bloqueadas:
         return 0
+
+    zerar = config.BLOQUEIO_NF_ATIVO
+    if not zerar:
+        log.info("  Bloqueio de NFs desativado — motivo registrado sem zerar comissão.")
 
     bloqueados = 0
     for p in pedidos:
@@ -1537,14 +1541,16 @@ def aplicar_bloqueios_nf(pedidos: list[Pedido]) -> int:
                 break
         if not motivo:
             continue
-        p.comissao_vendedor_pct = 0.0
-        p.comissao_compras_pct  = 0.0
-        p.comissao_menor_pct    = 0.0
-        p.valor_comissao_menor  = 0.0
-        p.motivo_bloqueio       = motivo
+        p.motivo_bloqueio = motivo
+        if zerar:
+            p.comissao_vendedor_pct = 0.0
+            p.comissao_compras_pct  = 0.0
+            p.comissao_menor_pct    = 0.0
+            p.valor_comissao_menor  = 0.0
         bloqueados += 1
         log.info(
-            "  [BLOQUEIO] Pedido %s NF %s — %s",
+            "  [BLOQUEIO%s] Pedido %s NF %s — %s",
+            "" if zerar else " (informativo)",
             p.numero_pedido, p.nota_fiscal, motivo or "(sem motivo informado)",
         )
 

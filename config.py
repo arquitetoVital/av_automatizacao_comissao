@@ -114,13 +114,29 @@ PASTA_ANALISTA_SIMULADORES   = Path(os.getenv("PASTA_ANALISTA_SIMULADORES", str(
 #    "NF bloqueada"     → número da NF a ser bloqueada
 #    "Motivo do Bloqueio" → texto exibido apenas no relatório do coordenador
 #
+#  BLOQUEIO_NF_ATIVO=true  → zera comissão E exibe motivo (padrão)
+#  BLOQUEIO_NF_ATIVO=false → apenas exibe motivo; comissão permanece calculada
+#
 #  Para alterar o caminho via variável de ambiente:
 #    ANALISE_SIMULADOR_PATH=Z:\CAMINHO\ANALISE_SIMULADOR.xlsx
 # ═══════════════════════════════════════════════════════
+BLOQUEIO_NF_ATIVO      = os.getenv("BLOQUEIO_NF_ATIVO", "true").lower() == "true"
 ANALISE_SIMULADOR_PATH = Path(os.getenv(
     "ANALISE_SIMULADOR_PATH",
     str(_BASE / "ANALISE_SIMULADOR.xlsx"),
 ))
+
+# ═══════════════════════════════════════════════════════
+#  SUPABASE — credenciais via variável de ambiente
+#
+#  Usadas pelo supabase_filter.py para consultar NFs com
+#  manifestação inválida e removê-las dos relatórios.
+#
+#  SUPABASE_URL=https://seu-projeto.supabase.co
+#  SUPABASE_KEY=sua_service_role_key
+# ═══════════════════════════════════════════════════════
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 
 # ═══════════════════════════════════════════════════════
 #  REGRAS DE COMISSÃO

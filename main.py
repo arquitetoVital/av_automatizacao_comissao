@@ -22,6 +22,7 @@ import exporter
 import github_publisher
 import reports
 import services
+import supabase_filter
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -74,11 +75,18 @@ def main() -> None:
     log.info("══ PASSO 3b: bloqueio de NFs ══")
     n_bloqueados = services.aplicar_bloqueios_nf(pedidos)
     if n_bloqueados:
-        log.info("  %d pedido(s) com NF bloqueada (comissão zerada).", n_bloqueados)
+        if config.BLOQUEIO_NF_ATIVO:
+            log.info("  %d pedido(s) com NF bloqueada (comissão zerada).", n_bloqueados)
+        else:
+            log.info("  %d pedido(s) com NF bloqueada (informativo — comissão mantida).", n_bloqueados)
 
     # df_coord → inclui fabricação interna (2%) — usado pelo coordenador e analista
     # df_vendor → fabricação interna ocultada — usado nos relatórios dos vendedores
     df_coord = services.pedidos_para_df(pedidos)
+
+    # ── Passo 3c: Filtro de manifestações — Supabase ─────
+    log.info("══ PASSO 3c: filtro manifestações Supabase ══")
+    df_coord = supabase_filter.filtrar_nfs_manifestadas(df_coord)
 
     # ── Passo 4: Relatório coordenador + analista ─────────
     log.info("══ PASSO 4: relatório coordenador ══")

@@ -106,6 +106,11 @@ def _escrever_excel(df: pd.DataFrame, caminho: Path, colunas: list, larguras: li
     Melhoria #5: linhas com _em_erro=True recebem fundo vermelho claro.
     Salva com timestamp se arquivo estiver bloqueado.
     """
+    colunas_esperadas = [c for c in colunas if c not in ("Valor_Comissao_Estimada", "Motivo_Bloqueio")]
+    if df.empty or not all(c in df.columns for c in colunas_esperadas):
+        log.warning("  DataFrame sem dados — planilha não gerada: %s", caminho.name)
+        return
+
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Vendas"
@@ -273,6 +278,10 @@ def distribuir_para_vendedores(df: pd.DataFrame) -> None:
       - Comissão zerada (vendedor não deve ver o cálculo interno)
     """
     log.info("═══ Distribuindo planilhas individuais ═══")
+
+    if df.empty or "Menor_Comissao_%" not in df.columns:
+        log.info("  Nenhum pedido faturado no período — distribuição ignorada.")
+        return
 
     df = df.copy()
     df["Comissao_Definida_%"] = df["Menor_Comissao_%"]
