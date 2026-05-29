@@ -85,6 +85,7 @@ def _resumo(df: pd.DataFrame) -> dict:
     """Calcula os totais gerais para o bloco resumo do JSON."""
     status_col    = df["Obs_Comissao"].fillna("").str.strip()
     mask_faturado = df.apply(_eh_faturado, axis=1)
+    mask_bloqueio = df["Motivo_Bloqueio"].fillna("").astype(str).str.strip() != ""
 
     return {
         "totalPedidos":          int(len(df)),
@@ -93,6 +94,7 @@ def _resumo(df: pd.DataFrame) -> dict:
         "valorTotalFaturado":    round(float(df["Valor_Faturado"].sum()), 2),
         "valorTotalAFaturar":    round(float(df.loc[~mask_faturado, "Valor_Pedido"].sum()), 2),
         "valorTotalComissao":    round(float(df["Valor_Comissao_Calculado"].sum()), 2),
+        "valorTotalBloqueado":   round(float(df.loc[mask_bloqueio, "Valor_Comissao_Calculado"].sum()), 2),
         "pedidosSemSimulador":   int((status_col == "Adicione o simulador na pasta CUSTO").sum()),
         "pedidosEmErro":         int((status_col == "Ajuste a planilha de custo").sum()),
         "pedidosPendentes":      int((status_col == "Analise de Compras pendente!").sum()),
@@ -116,7 +118,8 @@ def _por_vendedor(df: pd.DataFrame, info_vend) -> list[dict]:
 
     for vendedor, df_v in df.groupby("Nome_Vendedor", sort=True):
         vendedores_com_pedidos.add(str(vendedor))
-        mask_fat = df_v.apply(_eh_faturado, axis=1)
+        mask_fat       = df_v.apply(_eh_faturado, axis=1)
+        mask_bloqueio_v = df_v["Motivo_Bloqueio"].fillna("").astype(str).str.strip() != ""
 
         pedidos_lista = []
         for _, row in df_v.iterrows():
@@ -138,6 +141,7 @@ def _por_vendedor(df: pd.DataFrame, info_vend) -> list[dict]:
             "valorTotalFaturado":     round(float(df_v["Valor_Faturado"].sum()), 2),
             "valorTotalPendente":     round(float(df_v["Valor_Pendente"].sum()), 2),
             "valorTotalComissao":     round(float(df_v["Valor_Comissao_Calculado"].sum()), 2),
+            "valorBloqueado":         round(float(df_v.loc[mask_bloqueio_v, "Valor_Comissao_Calculado"].sum()), 2),
             "AjudaCusto":             info_vend.ajuda_custo(str(vendedor)),
             "pedidos":                pedidos_lista,
         })
