@@ -83,6 +83,14 @@ def _eh_faturado(row: pd.Series) -> bool:
 
 def _resumo(df: pd.DataFrame) -> dict:
     """Calcula os totais gerais para o bloco resumo do JSON."""
+    if df.empty or "Obs_Comissao" not in df.columns:
+        return {
+            "totalPedidos": 0, "totalPedidosFaturados": 0, "totalPedidosAFaturar": 0,
+            "valorTotalFaturado": 0.0, "valorTotalAFaturar": 0.0,
+            "valorTotalComissao": 0.0, "valorTotalBloqueado": 0.0,
+            "pedidosSemSimulador": 0, "pedidosEmErro": 0,
+            "pedidosPendentes": 0, "pedidosOk": 0,
+        }
     status_col    = df["Obs_Comissao"].fillna("").str.strip()
     mask_faturado = df.apply(_eh_faturado, axis=1)
     mask_bloqueio = df["Motivo_Bloqueio"].fillna("").astype(str).str.strip() != ""
@@ -116,7 +124,7 @@ def _por_vendedor(df: pd.DataFrame, info_vend) -> list[dict]:
     grupos: list[dict] = []
     vendedores_com_pedidos: set[str] = set()
 
-    for vendedor, df_v in df.groupby("Nome_Vendedor", sort=True):
+    for vendedor, df_v in (df.groupby("Nome_Vendedor", sort=True) if not df.empty and "Nome_Vendedor" in df.columns else []):
         vendedores_com_pedidos.add(str(vendedor))
         mask_fat       = df_v.apply(_eh_faturado, axis=1)
         mask_bloqueio_v = df_v["Motivo_Bloqueio"].fillna("").astype(str).str.strip() != ""

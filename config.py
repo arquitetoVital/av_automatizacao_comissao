@@ -46,7 +46,7 @@ OMIE_APP_SECRET = os.environ["OMIE_APP_SECRET"]
 #
 _MODO_AUTO  = os.getenv("MODO_AUTO", "true").lower() == "true"
 MODO_TESTE  = os.getenv("MODO_TESTE", "false").lower() == "true"
-_MES_MANUAL = date(2026, 4, 1)   # ← editar apenas quando MODO_AUTO=false
+_MES_MANUAL = date(2026, 5, 1)   # ← editar apenas quando MODO_AUTO=false
 _MES        = date.today().replace(day=1) if _MODO_AUTO else _MES_MANUAL
 
 _MESES_PT = {

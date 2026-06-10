@@ -829,7 +829,8 @@ def _deve_copiar(origem: Path, loc: LocalizacaoSimulador) -> tuple[bool, str]:
       3b no_ok           -> nao copiar
       3c no_erro, igual  -> nao copiar
       3c no_erro, difer. -> copiar (vendedor alterou)
-      3d raiz_e_erro     -> nao copiar
+      3d raiz_e_erro, raiz igual ao vendor -> nao copiar (compras ainda nao validou)
+      3d raiz_e_erro, raiz difer. do vendor -> copiar (vendedor atualizou de novo)
     """
     sit = loc.situacao
     if sit == "no_ok":
@@ -837,6 +838,10 @@ def _deve_copiar(origem: Path, loc: LocalizacaoSimulador) -> tuple[bool, str]:
     if sit == "na_raiz":
         return False, "ja na raiz (aguardando validacao)"
     if sit == "raiz_e_erro":
+        # O arquivo de ERRO nao foi removido numa execucao anterior.
+        # Verifica se o vendor atualizou em relacao ao arquivo que ja esta na raiz.
+        if loc.na_raiz is not None and not _arquivos_iguais(origem, loc.na_raiz):
+            return True, "em raiz + ERRO mas vendor atualizou — recopia para raiz"
         return False, "em raiz + ERRO (compras ainda nao validou)"
     if sit == "no_erro":
         if _arquivos_iguais(origem, loc.no_erro):
@@ -866,6 +871,21 @@ def _copiar_para_coordenador(simuladores_vendor: dict[str, Path], filial: str) -
                 shutil.copy2(origem, arq_destino)
                 log.debug("    Copiado (%s): %s", motivo, nome)
                 copiados += 1
+                # Remove o arquivo de ERRO correspondente para que a situacao
+                # fique "na_raiz" (e nao "raiz_e_erro") na proxima leitura,
+                # permitindo que compras analise a versao corrigida corretamente.
+                if loc.no_erro is not None:
+                    try:
+                        loc.no_erro.unlink()
+                        log.info(
+                            "    [ERRO-REMOVIDO] '%s' removido de ERRO (vendedor corrigiu).",
+                            loc.no_erro.name,
+                        )
+                    except Exception as exc_del:
+                        log.warning(
+                            "    Nao foi possivel remover '%s' de ERRO: %s",
+                            loc.no_erro.name, exc_del,
+                        )
             except Exception as exc:
                 log.error("    Erro ao copiar '%s': %s", nome, exc)
     log.info(
@@ -1426,6 +1446,7 @@ def marcar_sem_simulador(pedidos: list[Pedido]) -> None:
     """
     Classifica pedidos que ainda não têm obs definida após calcular_comissoes:
 
+    - Vendedor com comissao=NÃO → "Sem comissao" (zera comissão, tem prioridade)
     - Sem NF → "Pedido ainda nao faturado" (sem comissão)
     - Com NF, sem simulador:
         * Cliente com comissão fixa → usa o pct da planilha comissoes_fixas como
@@ -1434,10 +1455,16 @@ def marcar_sem_simulador(pedidos: list[Pedido]) -> None:
           escolherá o menor.
         * Demais clientes → 2% automático ("Fabricacao interna / simulador ausente")
     """
-    sem_nf = fab_interna = fab_fixa = 0
+    info_vend = carregar_vendedores()
+    sem_nf = fab_interna = fab_fixa = sem_com = 0
     for p in pedidos:
         if p.obs_comissao.strip():
             continue   # já classificado por calcular_comissoes
+
+        if not info_vend.tem_comissao(p.nome_vendedor):
+            p.obs_comissao = "Sem comissao"
+            sem_com += 1
+            continue
 
         tem_nf = p.nota_fiscal not in ("-", "", None)
 
@@ -1458,13 +1485,15 @@ def marcar_sem_simulador(pedidos: list[Pedido]) -> None:
             p.obs_comissao         = "Fabricacao interna / simulador ausente"
             fab_interna += 1
 
+    if sem_com:
+        log.info("  %d pedido(s) de vendedor(es) sem comissao (ignorados antes de fab. interna).", sem_com)
     if sem_nf:
         log.info("  %d pedido(s) ainda nao faturado(s).", sem_nf)
     if fab_fixa:
         log.info("  %d pedido(s) com comissao fixa (aguardando simulador do vendedor).", fab_fixa)
     if fab_interna:
         log.info("  %d pedido(s) sem simulador (comissao 2%% aplicada).", fab_interna)
-    if not sem_nf and not fab_fixa and not fab_interna:
+    if not sem_nf and not fab_fixa and not fab_interna and not sem_com:
         log.info("  Todos os pedidos com obs definida.")
 
 
