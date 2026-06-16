@@ -25,7 +25,8 @@ load_dotenv()
 # ═══════════════════════════════════════════════════════
 #  LOGGING
 # ═══════════════════════════════════════════════════════
-LOG_FILE = Path("gerar_comissoes.log")
+LOG_FILE          = Path("gerar_comissoes.log")
+LOG_SUBSTITUICOES = Path("substituicoes_simuladores.log")
 
 # ═══════════════════════════════════════════════════════
 #  OMIE — credenciais via variável de ambiente

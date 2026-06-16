@@ -769,8 +769,10 @@ def _localizar_simulador_coordenador(
     pasta_ok: Path,
     pasta_erro: Path,
 ) -> LocalizacaoSimulador:
-    loc  = LocalizacaoSimulador()
-    stem = Path(nome_arq).stem.upper()
+    loc       = LocalizacaoSimulador()
+    id_pedido = _extrair_id_pedido(Path(nome_arq).stem)
+    if not id_pedido:
+        return loc
     for pasta, attr in (
         (pasta_filial, "na_raiz"),
         (pasta_ok,     "no_ok"),
@@ -783,7 +785,7 @@ def _localizar_simulador_coordenador(
                 candidato.is_file()
                 and candidato.suffix.lower() in _EXT_SIMULADOR
                 and not candidato.name.startswith("~$")
-                and candidato.stem.upper() == stem
+                and _extrair_id_pedido(candidato.stem) == id_pedido
             ):
                 setattr(loc, attr, candidato)
                 break
@@ -824,43 +826,85 @@ def _nome_base(nome_arq: str) -> str:
 
 def _deve_copiar(origem: Path, loc: LocalizacaoSimulador) -> tuple[bool, str]:
     """
-    Regras da Melhoria #3:
-      3a na_raiz         -> nao copiar
-      3b no_ok           -> nao copiar
-      3c no_erro, igual  -> nao copiar
-      3c no_erro, difer. -> copiar (vendedor alterou)
-      3d raiz_e_erro, raiz igual ao vendor -> nao copiar (compras ainda nao validou)
-      3d raiz_e_erro, raiz difer. do vendor -> copiar (vendedor atualizou de novo)
+    Regras atualizadas:
+      no_ok               -> nao copiar (validado por Compras — fonte de verdade)
+      na_raiz, mesmo nome e conteudo -> nao copiar
+      na_raiz, nome diferente        -> copiar (vendor renomeou; antigo sera deletado)
+      na_raiz, conteudo diferente    -> copiar (vendor atualizou)
+      raiz_e_erro, raiz igual ao vendor  -> nao copiar
+      raiz_e_erro, raiz diferente        -> copiar (vendor atualizou)
+      no_erro, mesmo nome e conteudo -> nao copiar
+      no_erro, nome diferente ou conteudo diferente -> copiar (vendor corrigiu/renomeou)
     """
     sit = loc.situacao
     if sit == "no_ok":
         return False, "ja em OK (validado)"
     if sit == "na_raiz":
-        return False, "ja na raiz (aguardando validacao)"
+        if (
+            loc.na_raiz is not None
+            and origem.name == loc.na_raiz.name
+            and _arquivos_iguais(origem, loc.na_raiz)
+        ):
+            return False, "ja na raiz e sem alteracao"
+        motivo = (
+            "vendor renomeou simulador — substitui na raiz"
+            if loc.na_raiz is not None and origem.name != loc.na_raiz.name
+            else "vendor atualizou simulador na raiz"
+        )
+        return True, motivo
     if sit == "raiz_e_erro":
-        # O arquivo de ERRO nao foi removido numa execucao anterior.
-        # Verifica se o vendor atualizou em relacao ao arquivo que ja esta na raiz.
-        if loc.na_raiz is not None and not _arquivos_iguais(origem, loc.na_raiz):
-            return True, "em raiz + ERRO mas vendor atualizou — recopia para raiz"
-        return False, "em raiz + ERRO (compras ainda nao validou)"
+        if loc.na_raiz is not None and _arquivos_iguais(origem, loc.na_raiz):
+            return False, "em raiz + ERRO (compras ainda nao validou)"
+        return True, "em raiz + ERRO mas vendor atualizou — recopia para raiz"
     if sit == "no_erro":
-        if _arquivos_iguais(origem, loc.no_erro):
+        if (
+            loc.no_erro is not None
+            and origem.name == loc.no_erro.name
+            and _arquivos_iguais(origem, loc.no_erro)
+        ):
             return False, "em ERRO e sem alteracao"
-        return True, "em ERRO e alterado pelo vendedor — recopia para raiz"
+        motivo = (
+            "em ERRO — vendor renomeou simulador"
+            if loc.no_erro is not None and origem.name != loc.no_erro.name
+            else "em ERRO e alterado pelo vendedor — recopia para raiz"
+        )
+        return True, motivo
     return True, "novo simulador"
 
 
+def _logar_substituicao(filial: str, id_pedido: str, nome_antigo: str, nome_novo: str) -> None:
+    """Registra em log separado a substituicao de simulador na raiz do coordenador."""
+    try:
+        linha = (
+            f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {filial} | "
+            f"Pedido {id_pedido} | "
+            f'Substituido: "{nome_antigo}" -> "{nome_novo}"\n'
+        )
+        with config.LOG_SUBSTITUICOES.open("a", encoding="utf-8") as f:
+            f.write(linha)
+    except Exception as exc:
+        log.warning("    Nao foi possivel gravar log de substituicao: %s", exc)
+
+
 def _copiar_para_coordenador(simuladores_vendor: dict[str, Path], filial: str) -> None:
-    """Copia simuladores do vendedor para a raiz da filial do coordenador (Melhorias #1 e #3).
-    Correção: arquivos sem ID de pedido identificável no nome são ignorados."""
+    """Copia simuladores do vendedor para a raiz da filial do coordenador.
+
+    Regras:
+    - Busca por ID do pedido (nao por nome) para detectar renomeacoes.
+    - na_raiz: sempre reflete o vendedor; se nome mudou, deleta o antigo e loga (1b).
+    - no_ok: nunca sobrescreve (Compras e a fonte de verdade apos validacao).
+    - no_erro: copia se conteudo ou nome mudou; deleta o arquivo de ERRO (2b).
+    - Arquivos sem ID identificavel no nome sao ignorados.
+    """
     pasta_filial, pasta_ok, pasta_erro = _pasta_coordenador_filial(filial)
     copiados = ignorados = sem_id = 0
     for nome, origem in simuladores_vendor.items():
-        if not _extrair_id_pedido(Path(_nome_base(nome)).stem):
+        id_pedido = _extrair_id_pedido(Path(_nome_base(nome)).stem)
+        if not id_pedido:
             log.debug("    [SEM-ID] Ignorado (sem numero de pedido no nome): %s", nome)
             sem_id += 1
             continue
-        loc   = _localizar_simulador_coordenador(nome, pasta_filial, pasta_ok, pasta_erro)
+        loc        = _localizar_simulador_coordenador(nome, pasta_filial, pasta_ok, pasta_erro)
         deve, motivo = _deve_copiar(origem, loc)
         if not deve:
             log.debug("    Ignorado (%s): %s", motivo, nome)
@@ -868,12 +912,26 @@ def _copiar_para_coordenador(simuladores_vendor: dict[str, Path], filial: str) -
         else:
             arq_destino = pasta_filial / nome
             try:
+                # 1b — arquivo na raiz com nome diferente: deleta o orfao e loga
+                if loc.na_raiz is not None and loc.na_raiz.name != nome:
+                    try:
+                        loc.na_raiz.unlink()
+                        _logar_substituicao(filial, id_pedido, loc.na_raiz.name, nome)
+                        log.info(
+                            "    [SUBSTITUIDO] Pedido %s: '%s' -> '%s'",
+                            id_pedido, loc.na_raiz.name, nome,
+                        )
+                    except Exception as exc_del:
+                        log.warning(
+                            "    Nao foi possivel remover orfao '%s': %s",
+                            loc.na_raiz.name, exc_del,
+                        )
+
                 shutil.copy2(origem, arq_destino)
                 log.debug("    Copiado (%s): %s", motivo, nome)
                 copiados += 1
-                # Remove o arquivo de ERRO correspondente para que a situacao
-                # fique "na_raiz" (e nao "raiz_e_erro") na proxima leitura,
-                # permitindo que compras analise a versao corrigida corretamente.
+
+                # Remove o arquivo de ERRO (mesmo que tenha nome diferente — caso 2b)
                 if loc.no_erro is not None:
                     try:
                         loc.no_erro.unlink()
