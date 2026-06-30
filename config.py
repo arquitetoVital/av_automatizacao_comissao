@@ -72,24 +72,12 @@ PASTA_CUSTO     = f"CUSTO {_MESES_PT[_MES.month]}"                   # "CUSTO MA
 _BASE = Path(os.getenv("PASTA_BASE", r"Z:\TI\ROBERT\PROJETO COMISSOES"))
 
 PASTA_COORD       = Path(os.getenv("PASTA_COORD",       str(_BASE / "TESTE_COORDENADOR")))
+PASTA_COORD_MG    = Path(os.getenv("PASTA_COORD_MG",    str(_BASE / "TESTE_COORDENADOR_MG")))
 PASTA_VENDEDOR_SP = Path(os.getenv("PASTA_VENDEDOR_SP", str(_BASE / "PASTA_VENDEDOR_SP")))
 PASTA_VENDEDOR_MG = Path(os.getenv("PASTA_VENDEDOR_MG", str(_BASE / "PASTA_VENDEDOR_MG")))
 PASTA_COMPRADOR   = Path(os.getenv("PASTA_COMPRADOR",   str(_BASE / "TESTE_COMPRADOR")))
+PASTA_COMPRADOR_MG = Path(os.getenv("PASTA_COMPRADOR_MG", str(_BASE / "TESTE_COMPRADOR_MG")))
 
-# Pasta raiz dos coordenadores para os simuladores de compras.
-# Estrutura esperada:
-#   {PASTA_COORD_COMPRAS}\{ANO}\COORDENADORES\SIMULADORES_COMPRAS\{MES_REF}\{SP|MG}\
-#   {PASTA_COORD_COMPRAS}\{ANO}\COORDENADORES\SIMULADORES_COMPRAS\{MES_REF}\{SP|MG}\OK\
-#   {PASTA_COORD_COMPRAS}\{ANO}\COORDENADORES\SIMULADORES_COMPRAS\{MES_REF}\{SP|MG}\ERRO\
-_ANO_REF = str(_MES.year)
-PASTA_COORD_COMPRAS_SP = Path(os.getenv(
-    "PASTA_COORD_COMPRAS_SP",
-    str(_BASE / _ANO_REF / "COORDENADORES" / "SIMULADORES_COMPRAS" / MES_REF / "SP"),
-))
-PASTA_COORD_COMPRAS_MG = Path(os.getenv(
-    "PASTA_COORD_COMPRAS_MG",
-    str(_BASE / _ANO_REF / "COORDENADORES" / "SIMULADORES_COMPRAS" / MES_REF / "MG"),
-))
 
 # ═══════════════════════════════════════════════════════
 #  ANALISTA DE VENDAS

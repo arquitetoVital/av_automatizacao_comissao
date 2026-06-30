@@ -254,6 +254,13 @@ def gerar_relatorio_coordenador(df: pd.DataFrame) -> None:
     _escrever_excel(df, caminho, COLUNAS_COORD, LARGURAS_COORD)
 
 
+def gerar_relatorio_coordenador_mg(df: pd.DataFrame) -> None:
+    """Gera cópia do relatório consolidado na pasta do coordenador de MG."""
+    log.info("═══ Salvando planilha do coordenador MG ═══")
+    caminho = config.PASTA_COORD_MG / f"{config.MES_REF}_RELATORIO_GERAL_COMISSAO.xlsx"
+    _escrever_excel(df, caminho, COLUNAS_COORD, LARGURAS_COORD)
+
+
 def gerar_relatorio_analista(df: pd.DataFrame) -> None:
     """
     Gera cópia do relatório do coordenador na pasta da analista de vendas.

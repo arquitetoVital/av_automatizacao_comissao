@@ -712,15 +712,19 @@ def _arquivo_ajustado(nome_arq: str) -> bool:
 
 # ═══ MELHORIA #1 — ESTRUTURA OK/ERRO DO COORDENADOR ══
 
-def _pasta_coordenador_filial(filial: str) -> tuple[Path, Path, Path]:
+def _pasta_coordenador_filial(filial: str, pasta_raiz: Path | None = None) -> tuple[Path, Path, Path]:
     """
     Garante existencia de:
-      PASTA_COMPRADOR / MES_REF / {filial} /
-      PASTA_COMPRADOR / MES_REF / {filial} / OK/
-      PASTA_COMPRADOR / MES_REF / {filial} / ERRO/
+      {pasta_raiz} / MES_REF / {filial} /
+      {pasta_raiz} / MES_REF / {filial} / OK/
+      {pasta_raiz} / MES_REF / {filial} / ERRO/
+    pasta_raiz: se omitida, seleciona PASTA_COMPRADOR_MG para MG e PASTA_COMPRADOR para SP.
     Retorna (pasta_filial, pasta_ok, pasta_erro).
     """
-    pasta_filial = config.PASTA_COMPRADOR / config.MES_REF / filial
+    if pasta_raiz is None:
+        pasta_raiz = config.PASTA_COMPRADOR_MG if filial == "MG" else config.PASTA_COMPRADOR
+    raiz         = pasta_raiz
+    pasta_filial = raiz / config.MES_REF / filial
     pasta_ok     = pasta_filial / "OK"
     pasta_erro   = pasta_filial / "ERRO"
     for p in (pasta_filial, pasta_ok, pasta_erro):
@@ -886,7 +890,11 @@ def _logar_substituicao(filial: str, id_pedido: str, nome_antigo: str, nome_novo
         log.warning("    Nao foi possivel gravar log de substituicao: %s", exc)
 
 
-def _copiar_para_coordenador(simuladores_vendor: dict[str, Path], filial: str) -> None:
+def _copiar_para_coordenador(
+    simuladores_vendor: dict[str, Path],
+    filial: str,
+    pasta_raiz: Path | None = None,
+) -> None:
     """Copia simuladores do vendedor para a raiz da filial do coordenador.
 
     Regras:
@@ -895,8 +903,9 @@ def _copiar_para_coordenador(simuladores_vendor: dict[str, Path], filial: str) -
     - no_ok: nunca sobrescreve (Compras e a fonte de verdade apos validacao).
     - no_erro: copia se conteudo ou nome mudou; deleta o arquivo de ERRO (2b).
     - Arquivos sem ID identificavel no nome sao ignorados.
+    pasta_raiz: diretório base do coordenador. SP usa PASTA_COMPRADOR, MG usa PASTA_COMPRADOR_MG.
     """
-    pasta_filial, pasta_ok, pasta_erro = _pasta_coordenador_filial(filial)
+    pasta_filial, pasta_ok, pasta_erro = _pasta_coordenador_filial(filial, pasta_raiz)
     copiados = ignorados = sem_id = 0
     for nome, origem in simuladores_vendor.items():
         id_pedido = _extrair_id_pedido(Path(_nome_base(nome)).stem)
@@ -1135,9 +1144,9 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
         len(sims_sp), len(sims_mg), len(sims_vendor),
     )
 
-    # Melhoria #3: copia por regra de pasta
+    # Melhoria #3: copia por regra de pasta — SP para PASTA_COMPRADOR, MG para PASTA_COMPRADOR_MG
     _copiar_para_coordenador(sims_sp, "SP")
-    _copiar_para_coordenador(sims_mg, "MG")
+    _copiar_para_coordenador(sims_mg, "MG", config.PASTA_COMPRADOR_MG)
 
     # Copia para pasta da analista (simples, sem lógica de OK/ERRO)
     _copiar_para_analista(sims_sp, "SP")

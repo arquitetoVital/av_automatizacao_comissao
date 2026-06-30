@@ -91,6 +91,7 @@ def main() -> None:
     # ── Passo 4: Relatório coordenador + analista ─────────
     log.info("══ PASSO 4: relatório coordenador ══")
     reports.gerar_relatorio_coordenador(df_coord)
+    reports.gerar_relatorio_coordenador_mg(df_coord)
     reports.gerar_relatorio_analista(df_coord)
 
     # ── Passo 5: Distribuição por vendedor ───────────────
