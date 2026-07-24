@@ -194,11 +194,18 @@ def _aplicar_comissoes_fixas(
 # ═══ EXTRAÇÃO OMIE ═════════════════════════════════════
 
 def _agrupar_nfs_por_pedido(nfs: list[dict]) -> dict[int, dict]:
+    """
+    Agrupa NFs por nIdPedido. Também guarda, por grupo, os blocos "pedido"
+    (cNumPedido, cCancelado, cDevolvido, dIncPedido, nIdVendedor) e "nfDestInt"
+    (cliente) vindos do próprio ListarNF — usados em _montar_pedido_via_nf()
+    como fallback quando o pedido não aparece em listar_pedidos().
+    """
     agrupado: dict[int, dict] = {}
     for nf in nfs:
-        compl = nf.get("compl", {})
-        ide   = nf.get("ide",   {})
-        total = nf.get("total", {}).get("ICMSTot", {})
+        compl   = nf.get("compl", {})
+        ide     = nf.get("ide",   {})
+        total   = nf.get("total", {}).get("ICMSTot", {})
+        titulos = nf.get("titulos") or []
         n_id_pedido = compl.get("nIdPedido")
         if not n_id_pedido:
             continue
@@ -206,13 +213,26 @@ def _agrupar_nfs_por_pedido(nfs: list[dict]) -> dict[int, dict]:
         d_emi = _normalizar_data(ide.get("dEmi", ""))
         v_nf  = float(total.get("vNF", 0) or 0)
         if n_id_pedido not in agrupado:
-            agrupado[n_id_pedido] = {"notas": [], "datas_nf": [], "valor_faturado": 0.0}
+            agrupado[n_id_pedido] = {
+                "notas": [], "datas_nf": [], "valor_faturado": 0.0,
+                "pedido_embutido": {}, "cliente_embutido": {}, "codigo_vendedor_embutido": None,
+            }
         g = agrupado[n_id_pedido]
         if n_nf and n_nf not in g["notas"]:
             g["notas"].append(n_nf)
         if d_emi and d_emi != "-" and d_emi not in g["datas_nf"]:
             g["datas_nf"].append(d_emi)
         g["valor_faturado"] = round(g["valor_faturado"] + v_nf, 2)
+
+        if not g["pedido_embutido"] and nf.get("pedido"):
+            g["pedido_embutido"] = nf["pedido"]
+        if not g["cliente_embutido"] and nf.get("nfDestInt"):
+            g["cliente_embutido"] = nf["nfDestInt"]
+        if not g["codigo_vendedor_embutido"]:
+            g["codigo_vendedor_embutido"] = (
+                g["pedido_embutido"].get("nIdVendedor")
+                or (titulos[0].get("nCodVendedor") if titulos else None)
+            )
     return agrupado
 
 
@@ -265,6 +285,7 @@ def extrair_omie() -> list[Pedido]:
     pedidos:       list[Pedido] = []
     blacklistados  = 0
     nfs_sem_pedido = 0
+    nfs_recuperadas = 0
     ids_inseridos: set[str] = set()
 
     def _montar_pedido(pedido_raw: dict, grupo: dict | None) -> Pedido | None:
@@ -279,8 +300,6 @@ def extrair_omie() -> list[Pedido]:
         codigo_vendedor = adic.get("codVend")
         valor_pedido    = float(tot.get("valor_total_pedido", 0) or 0)
         data_venda      = _normalizar_data(info.get("dInc", ""))
-        codigo_categoria = str(adic.get("codigo_categoria", "") or "").strip()
-        is_refaturamento = (codigo_categoria == "1.01.96")
 
         nome_cliente  = client.consultar_cliente(int(codigo_cliente))  if codigo_cliente  else ""
         nome_vendedor = client.nome_vendedor(int(codigo_vendedor))     if codigo_vendedor else ""
@@ -323,13 +342,84 @@ def extrair_omie() -> list[Pedido]:
             valor_pedido=valor_pedido, data_nota_fiscal=datas_nf,
             nota_fiscal=notas, valor_faturado=valor_faturado,
             valor_pendente=valor_pendente,
-            refaturamento=is_refaturamento,
+        )
+
+    def _montar_pedido_via_nf(grupo: dict) -> Pedido | None:
+        """
+        Fallback para quando o pedido não veio em listar_pedidos() mas a NF
+        (com detalhe completo) trouxe os blocos "pedido" e "nfDestInt"
+        embutidos — evita ter que consultar o pedido à parte (ConsultarPedido
+        individual é fortemente rate-limited pela OMIE).
+        """
+        nonlocal blacklistados
+        pedido_emb  = grupo.get("pedido_embutido")  or {}
+        cliente_emb = grupo.get("cliente_embutido") or {}
+
+        if not pedido_emb:
+            return None
+
+        # opPedido="11" é o único valor que corresponde a um pedido de venda
+        # "real" — outros valores aparecem no bloco embutido mas não existem
+        # de fato como pedido (confirmado testando sem esse filtro: trazia
+        # muitos registros fantasma).
+        if pedido_emb.get("opPedido") != "11":
+            return None
+
+        if pedido_emb.get("cCancelado") == "S" or pedido_emb.get("cDevolvido") == "S":
+            return None
+
+        numero_pedido = str(pedido_emb.get("cNumPedido") or "")
+        if not numero_pedido:
+            return None
+
+        codigo_vendedor = grupo.get("codigo_vendedor_embutido")
+        nome_vendedor   = client.nome_vendedor(int(codigo_vendedor)) if codigo_vendedor else ""
+        nome_cliente    = str(cliente_emb.get("cRazao") or "")
+
+        if not nome_vendedor.strip():
+            log.debug("    [FALLBACK-NF] Pedido %s sem vendedor.", numero_pedido)
+            blacklistados += 1
+            return None
+        if info_vend.na_blacklist_vendedor(nome_vendedor):
+            log.debug("    [FALLBACK-NF][BLACKLIST] Pedido %s (%s).", numero_pedido, nome_vendedor)
+            blacklistados += 1
+            return None
+        if info_vend.cliente_bloqueado(nome_cliente):
+            log.debug(
+                "    [FALLBACK-NF][BLACKLIST-CLIENTE] Pedido %s ignorado (cliente: %s).",
+                numero_pedido, nome_cliente,
+            )
+            blacklistados += 1
+            return None
+
+        valor_faturado = grupo["valor_faturado"]
+        notas          = " / ".join(sorted(grupo["notas"]))    or "-"
+        datas_nf       = " / ".join(sorted(grupo["datas_nf"])) or "-"
+        data_venda     = _normalizar_data(pedido_emb.get("dIncPedido", ""))
+
+        return Pedido(
+            data_venda=data_venda, numero_pedido=numero_pedido,
+            nome_cliente=nome_cliente, nome_vendedor=nome_vendedor,
+            valor_pedido=valor_faturado, data_nota_fiscal=datas_nf,
+            nota_fiscal=notas, valor_faturado=valor_faturado,
+            valor_pendente=0.0,
         )
 
     for n_id_pedido, grupo in agrupado.items():
         pedido_raw = idx_pedidos.get(n_id_pedido)
         if pedido_raw is None:
-            nfs_sem_pedido += 1
+            p = _montar_pedido_via_nf(grupo)
+            if p is None:
+                nfs_sem_pedido += 1
+                continue
+            nfs_recuperadas += 1
+            log.info(
+                "    [FALLBACK-NF] Pedido %s recuperado via dados embutidos na NF "
+                "(nao veio no ListarPedidos).",
+                p.numero_pedido,
+            )
+            pedidos.append(p)
+            ids_inseridos.add(p.numero_pedido)
             continue
         p = _montar_pedido(pedido_raw, grupo)
         if p:
@@ -357,8 +447,9 @@ def extrair_omie() -> list[Pedido]:
 
     pedidos.sort(key=lambda p: p.numero_pedido.zfill(10))
     log.info(
-        "  OMIE: %d com NF | %d sem NF | %d blacklistados (vendedor+cliente) | %d NFs sem pedido.",
-        len(ids_inseridos), sem_nf_incluidos, blacklistados, nfs_sem_pedido,
+        "  OMIE: %d com NF | %d sem NF | %d blacklistados (vendedor+cliente) | "
+        "%d NFs sem pedido | %d recuperados via fallback.",
+        len(ids_inseridos), sem_nf_incluidos, blacklistados, nfs_sem_pedido, nfs_recuperadas,
     )
     database.upsert_pedidos(pedidos, config.ANO_MES_REF)
     database.registrar_sync("OMIE")
@@ -1108,17 +1199,6 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
     fixas = carregar_comissoes_fixas()
     _aplicar_comissoes_fixas(pedidos, fixas)
 
-    # Marca refaturamentos imediatamente: comissão 0, obs definida.
-    # Esses pedidos são ignorados por todos os passos seguintes (obs já preenchida).
-    refaturamentos = [p for p in pedidos if p.refaturamento]
-    for p in refaturamentos:
-        p.comissao_menor_pct   = 0.0
-        p.valor_comissao_menor = 0.0
-        p.comissao_compras_pct = 0.0
-        p.obs_comissao         = "Refaturamento"
-    if refaturamentos:
-        log.info("  %d pedido(s) marcado(s) como Refaturamento (comissao 0).", len(refaturamentos))
-
     idx: dict[str, list[Pedido]] = {}
     for p in pedidos:
         chave = p.numero_pedido.strip().zfill(6)
@@ -1638,17 +1718,29 @@ def aplicar_bloqueios_nf(pedidos: list[Pedido]) -> int:
         if not motivo:
             continue
         p.motivo_bloqueio = motivo
-        if zerar:
+        if re.search(r"REFAT", motivo, re.IGNORECASE):
+            p.refaturamento         = True
+            p.obs_comissao          = "Refaturamento"
             p.comissao_vendedor_pct = 0.0
             p.comissao_compras_pct  = 0.0
             p.comissao_menor_pct    = 0.0
             p.valor_comissao_menor  = 0.0
+            log.info(
+                "  [REFATURAMENTO-BLOQUEIO] Pedido %s NF %s — motivo: %s",
+                p.numero_pedido, p.nota_fiscal, motivo,
+            )
+        else:
+            if zerar:
+                p.comissao_vendedor_pct = 0.0
+                p.comissao_compras_pct  = 0.0
+                p.comissao_menor_pct    = 0.0
+                p.valor_comissao_menor  = 0.0
+            log.info(
+                "  [BLOQUEIO%s] Pedido %s NF %s — %s",
+                "" if zerar else " (informativo)",
+                p.numero_pedido, p.nota_fiscal, motivo or "(sem motivo informado)",
+            )
         bloqueados += 1
-        log.info(
-            "  [BLOQUEIO%s] Pedido %s NF %s — %s",
-            "" if zerar else " (informativo)",
-            p.numero_pedido, p.nota_fiscal, motivo or "(sem motivo informado)",
-        )
 
     return bloqueados
 

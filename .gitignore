@@ -6,6 +6,7 @@ vendedores_sp.txt
 vendedores_mg.txt
 blacklist_clientes.txt
 faturamento_chile.xlsx
+comandos uteis.txt
 
 # Banco local
 *.db

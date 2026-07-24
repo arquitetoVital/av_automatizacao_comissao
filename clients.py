@@ -225,8 +225,21 @@ class OmieClient:
 
     def listar_nfs(self) -> list[dict]:
         """
-        Lista todas as NFs emitidas no período via ListarNF (resumo).
-        Cada item contém: compl.nIdPedido, ide.nNF, ide.dEmi, total.ICMSTot.vNF.
+        Lista todas as NFs emitidas no período via ListarNF (detalhe completo).
+        Cada item contém: compl.nIdPedido, ide.nNF, ide.dEmi, total.ICMSTot.vNF,
+        nfDestInt (cliente) e pedido (cNumPedido, cCancelado, cDevolvido,
+        dIncPedido, nIdVendedor, ...) — usado em services.py como fallback
+        quando o pedido não aparece em listar_pedidos() (a OMIE às vezes deixa
+        de retornar, na consulta paginada por período, pedidos já faturados que
+        existem e batem com o período — visto em produção: pedido 19088/
+        nIdPedido 10300084176).
+
+        NÃO usar cApenasResumo="S" — ele anula cDetalhesPedido e os blocos
+        "pedido"/"nfDestInt"/"titulos" voltam vazios. Sem o resumo o payload
+        por página é bem mais pesado, por isso registros_por_pagina é menor
+        aqui (20) do que era em modo resumo (era 50) — reduz risco de timeout
+        de página como aconteceu com listar_pedidos().
+
         Páginas com erro são puladas com log de aviso — não abortam a extração.
         """
         nfs        = []
@@ -239,9 +252,9 @@ class OmieClient:
                 data = self._post(self._URL_NF, "ListarNF", {
                     "dEmiInicial":          config.MES_INICIO_OMIE,
                     "dEmiFinal":            config.MES_FIM_OMIE,
-                    "cApenasResumo":        "S",
+                    "cDetalhesPedido":      "S",
                     "pagina":               pagina,
-                    "registros_por_pagina": 50,
+                    "registros_por_pagina": 20,
                 })
                 tot_pag = data.get("total_de_paginas", 1)
                 nfs.extend(data.get("nfCadastro", []))

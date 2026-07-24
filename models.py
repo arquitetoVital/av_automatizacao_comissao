@@ -50,8 +50,8 @@ class Pedido:
     # "menor entre vendedor e compras" quando o vendedor adicionar simulador.
     comissao_fixa: bool = False
 
-    # True quando codigo_categoria == "1.01.96" (Venda Cliente - Refaturamento).
-    # Esses pedidos aparecem no relatório com comissão 0 e obs "Refaturamento".
+    # True quando a NF do pedido consta na planilha ANALISE_SIMULADOR.xlsx com "Refat"
+    # no motivo de bloqueio. Esses pedidos aparecem no relatório com comissão 0 e obs "Refaturamento".
     refaturamento: bool = False
 
     # True quando os valores de margem e comissão do vendedor já foram fixados
