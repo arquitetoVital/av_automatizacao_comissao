@@ -5,7 +5,7 @@ Consulta o Supabase para identificar NFs com manifestação inválida e remove
 essas linhas do DataFrame antes de gerar as planilhas e o JSON do dashboard.
 
 Manifestações consideradas VÁLIDAS (mantidas):
-    'Operação Confirmada', 'Ciência da Operação', 'N/D'
+    'Operação Confirmada', 'Ciência da Operação', 'N/D', e nulo (None/vazio)
 
 Qualquer outra manifestação indica problema (ex.: 'Desconhecimento da Operação',
 'Operação não Realizada') e a NF correspondente é removida dos relatórios.
@@ -110,7 +110,9 @@ def buscar_nfs_manifestacao_invalida() -> set[str]:
     nfs = {
         _nf_para_chave(str(r["numero_nf"]))
         for r in rows
-        if r.get("numero_nf") and r.get("manifestacao") not in _MANIFESTACOES_VALIDAS
+        if r.get("numero_nf")
+        and r.get("manifestacao") is not None
+        and r.get("manifestacao") not in _MANIFESTACOES_VALIDAS
     }
     log.info(
         "  [SUPABASE] %d NF(s) com manifestação inválida encontrada(s) "

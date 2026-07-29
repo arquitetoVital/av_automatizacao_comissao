@@ -725,9 +725,19 @@ def _buscar_simuladores_retroativos(
         na pasta CUSTO; quando fizer isso, o fluxo normal de cópia para o
         comprador cuida do restante — sem interferência do retroativo)
 
-    Se encontrado nos meses anteriores:
-      - Copia para a raiz da pasta do coordenador do mês atual;
-      - Retorna {nome_arquivo: caminho_copiado}.
+    Se encontrado nos meses anteriores, o status é preservado ao copiar para o
+    mês atual. A busca é priorizada por STATUS (OK > ERRO > pendente),
+    varrendo TODOS os meses anteriores em cada nível antes de cair para o
+    próximo — assim uma validação OK/ERRO dada num mês mais antigo nunca é
+    ofuscada por uma cópia pendente feita num mês mais recente:
+      - Encontrado em /OK de QUALQUER mês anterior   → copia para /OK do mês
+        atual (já foi validado pelo comprador, considera-se válido de novo).
+      - Senão, encontrado em /ERRO de qualquer mês anterior → copia para
+        /ERRO do mês atual (já foi rejeitado, permanece rejeitado até o
+        vendedor corrigir).
+      - Senão, encontrado na raiz (ainda pendente) de algum mês anterior →
+        copia para a raiz do mês atual (segue pendente de validação).
+    Retorna {nome_arquivo: caminho_copiado}.
     """
     if not ids_nao_encontrados:
         return {}
@@ -746,16 +756,31 @@ def _buscar_simuladores_retroativos(
             len(ids_ja_tratados & ids_nao_encontrados), filial,
         )
 
-    pasta_destino_filial, _, _ = _pasta_coordenador_filial(filial)
+    pasta_destino_filial, pasta_destino_ok, pasta_destino_erro = _pasta_coordenador_filial(filial)
     recuperados: dict[str, Path] = {}
+    meses = _meses_anteriores_compras(filial)
 
-    for pasta_mes_filial in _meses_anteriores_compras(filial):
+    # A busca é priorizada por STATUS (OK > ERRO > pendente), varrendo TODOS os
+    # meses anteriores em cada nível antes de passar ao próximo. Isso garante
+    # que uma validação OK/ERRO já dada em um mês mais antigo nunca seja
+    # "perdida" por causa de uma cópia pendente em um mês mais recente — o
+    # status definitivo do comprador tem sempre prioridade sobre a recência.
+    for subpasta_nome, pasta_destino, rotulo_destino in (
+        ("OK", pasta_destino_ok, "OK"),
+        ("ERRO", pasta_destino_erro, "ERRO"),
+        (None, pasta_destino_filial, "raiz (pendente)"),
+    ):
         if not ids_para_buscar:
             break   # todos já foram encontrados
 
-        for subpasta in (pasta_mes_filial, pasta_mes_filial / "OK", pasta_mes_filial / "ERRO"):
+        for pasta_mes_filial in meses:
+            if not ids_para_buscar:
+                break   # todos já foram encontrados
+
+            subpasta = pasta_mes_filial / subpasta_nome if subpasta_nome else pasta_mes_filial
             if not subpasta.exists():
                 continue
+
             for arq in sorted(subpasta.iterdir()):
                 if not arq.is_file():
                     continue
@@ -765,14 +790,14 @@ def _buscar_simuladores_retroativos(
                 if not id_p or id_p not in ids_para_buscar:
                     continue
 
-                # Encontrou — copiar para raiz da pasta do coordenador do mês atual
-                destino = pasta_destino_filial / arq.name
+                # Encontrou — copia preservando o status (OK/ERRO/raiz) no mês atual
+                destino = pasta_destino / arq.name
                 if not destino.exists():
                     try:
                         shutil.copy2(arq, destino)
                         log.info(
-                            "    [RETROATIVO] Pedido %s — '%s' copiado de '%s' para comprador/%s",
-                            id_p, arq.name, subpasta.parent.name, filial,
+                            "    [RETROATIVO] Pedido %s — '%s' copiado de '%s' para comprador/%s/%s",
+                            id_p, arq.name, subpasta.parent.name, filial, rotulo_destino,
                         )
                     except Exception as exc:
                         log.warning(
@@ -781,8 +806,8 @@ def _buscar_simuladores_retroativos(
                         continue
                 else:
                     log.debug(
-                        "    [RETROATIVO] Pedido %s — '%s' já existe na raiz do coordenador, ignorado.",
-                        id_p, arq.name,
+                        "    [RETROATIVO] Pedido %s — '%s' já existe em '%s' do coordenador, ignorado.",
+                        id_p, arq.name, rotulo_destino,
                     )
 
                 recuperados[arq.name] = destino
