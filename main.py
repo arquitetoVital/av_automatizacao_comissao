@@ -9,13 +9,14 @@ Fluxo:
   3. Relatório     → coordenador       (reports)
   4. Marcação      → sem simulador     (services)
   5. Distribuição  → vendedores        (reports)
-  6. Publicação    → JSON → GitHub     (exporter + github_publisher)
+  6. Publicação    → JSON → GitHub + API interna (exporter + github_publisher + comissoes_api)
 """
 
 import logging
 import sys
 from datetime import datetime
 
+import comissoes_api
 import config
 import database
 import exporter
@@ -103,6 +104,7 @@ def main() -> None:
     payload = exporter.gerar_json(df_coord)
     exporter.salvar_json_local(payload)   # salva cópia local como fallback
     github_publisher.publicar(payload)    # commit no repositório privado
+    comissoes_api.publicar(payload)       # envia para o banco via API interna
 
     duracao = (datetime.now() - inicio).total_seconds()
     log.info("════════════════════════════════════════════════")
