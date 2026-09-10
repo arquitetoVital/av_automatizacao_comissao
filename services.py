@@ -648,7 +648,7 @@ def _meses_anteriores_compras(filial: str) -> list[Path]:
     Estrutura esperada:
       PASTA_COMPRADOR / {MM_NOMEMES} / {filial}
     """
-    raiz = config.PASTA_COMPRADOR
+    raiz = config.PASTA_COMPRADOR_MG if filial == "MG" else config.PASTA_COMPRADOR
     if not raiz.exists():
         return []
 
