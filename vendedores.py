@@ -157,7 +157,8 @@ def carregar_vendedores() -> InfoVendedores:
         for row in ws.iter_rows(min_row=2, values_only=True):
             nome = row[0]
             if nome:
-                info._bl_vendedores.add(str(nome).strip().upper())
+                # mesma chave de _chave(): aceita "JOAO PEDRO VITAL" ou "JOAO_PEDRO_VITAL"
+                info._bl_vendedores.add(nome_para_pasta(str(nome)).upper())
         log.info("  BLACKLIST_VENDEDORES: %d entradas.", len(info._bl_vendedores))
     else:
         log.warning("  Aba BLACKLIST_VENDEDORES nao encontrada.")

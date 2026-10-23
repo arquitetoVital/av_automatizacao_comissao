@@ -473,7 +473,7 @@ def _para_float(valor) -> float:
 
 
 def _is_prejuizo(status) -> bool:
-    return str(status or "").strip().upper() == "PREJUIZO"
+    return normalizar_str(status) == "PREJUIZO"
 
 
 def _extrair_id_pedido(stem: str) -> str | None:
@@ -1409,24 +1409,21 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
             sit = loc_coord.situacao if loc_coord else "nao_existe"
 
             # ── Teto de comissão fixa para este pedido ────────────────────────────
-            teto_fixa, condicional_ativa = _resolver_teto_fixa(linhas_pedido, margem_vendor)
-            tem_fixa = teto_fixa is not None
+            teto_fixa, _ = _resolver_teto_fixa(linhas_pedido, margem_vendor)
 
             # ── Cálculo principal ─────────────────────────────────────────────────
             #
             # PEDIDOS COM CLIENTE NA PLANILHA DE FIXAS:
             #   pct_final = min(pct_vendedor, pct_compras, teto_fixa)
-            #   Sem validação do comprador → min(pct_vendedor, teto_fixa) como estimativa
+            #   Sem validação do comprador → mesma regra dos demais pedidos: fica
+            #   "Analise de Compras pendente!" (o teto_fixa só vira estimativa
+            #   quando não há simulador nenhum — ver marcar_sem_simulador).
             #
             # PEDIDOS SEM FIXAS:
             #   pct_final = min(pct_vendedor, pct_compras)
             #   A tabela já limita naturalmente (A=2%, B=1.3%, C=0.7%, D=0.5%)
             #
             # PREJUÍZO (vendedor ou comprador) → zera em qualquer caso
-
-            # Flag: estimativa condicional ainda não confirmada pelo comprador
-            # (usado em reports para ocultar valor do relatório do vendedor)
-            estimativa_condicional = condicional_ativa and not comprador_ajustou
 
             if comprador_ajustou:
                 letra_c          = str(info_comprador.letra_com or "").strip().upper()
@@ -1445,22 +1442,6 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
                         pct_menor = teto_fixa
                     prejuizo = False
 
-                obs = "Comissao Definida! - Prejuizo" if prejuizo else "Comissao Definida!"
-
-            elif tem_fixa:
-                # Sem validação do comprador, mas teto definido pela planilha de fixas.
-                # Estimativa: min(pct_vendedor, teto_fixa).
-                # Se condicional ativa mas sem comprador → estimativa condicional
-                # (não exibida para o vendedor).
-                prejuizo_vendor = _is_prejuizo(info_vendor.status)
-                if prejuizo_vendor:
-                    pct_c     = teto_fixa
-                    pct_menor = 0.0
-                    prejuizo  = True
-                else:
-                    pct_c     = teto_fixa
-                    pct_menor = min(pct_v, teto_fixa)
-                    prejuizo  = False
                 obs = "Comissao Definida! - Prejuizo" if prejuizo else "Comissao Definida!"
 
             else:
@@ -1487,7 +1468,7 @@ def calcular_comissoes(pedidos: list[Pedido]) -> list[Pedido]:
                 linha.valor_comissao_menor     = round(linha.valor_faturado * pct_menor, 2)
                 linha.margem_simulador         = margem_vendor if margem_vendor is not None else 0.0
                 linha.simulador_fixado         = True  # fixa na primeira leitura do vendor sim
-                linha.estimativa_condicional   = estimativa_condicional
+                linha.estimativa_condicional   = False
                 linha.obs_comissao             = obs
                 linha.em_erro                  = em_erro
 
